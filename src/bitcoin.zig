@@ -651,6 +651,7 @@ pub const Script = struct {
         pub const OP_SHA256: u8 = 0xa8;
         pub const OP_HASH160: u8 = 0xa9;
         pub const OP_CHECKSIG: u8 = 0xac;
+        pub const OP_CHECK_MULTISIG: u8 = 0xae;
 
         pub fn isSupported(opcode: u8) bool {
             if (opcode < OP_16) return true;
@@ -791,6 +792,53 @@ pub const Script = struct {
                     const pubkey = stack.pop(&buffer_pubkey) catch |err| return Local.handlePopError(err);
                     const signature = stack.pop(&buffer_signature) catch |err| return Local.handlePopError(err);
                     if (try Tx.checksig(transaction.?, input_index.?, pubkey, signature, script, alloc)) {
+                        try stack.push(&[1]u8{1});
+                    } else {
+                        try stack.push(&[1]u8{0});
+                    }
+                },
+                Op.OP_CHECK_MULTISIG => {
+                    if (transaction == null) @panic("Trying to execute OP_CHECK_MULTISIG with a null transaction");
+                    if (input_index == null) @panic("Trying to execute OP_CHECK_MULTISIG with a null input_index");
+
+                    const MAX_KEYS = 20;
+                    const MAX_SIGNATURES = 20;
+
+                    var pubkeys: [MAX_SIGNATURES][Stack.MAX_STACK_ELEMENT_SIZE]u8 = undefined;
+                    var signatures: [MAX_SIGNATURES][Stack.MAX_STACK_ELEMENT_SIZE]u8 = undefined;
+
+                    const num_keys: i64 = stack.popInt() catch return error.BadScript;
+                    if (num_keys > MAX_KEYS) { return error.BadScript; }
+
+                    for (0..num_keys) |n| {
+                       stack.pop(&pubkeys[n]) catch |err| return Local.handlePopError(err);
+                    }
+
+                    const num_sigs: i64 = stack.popInt() catch return error.BadScript;
+                    if (num_sigs > MAX_SIGNATURES) { return error.BadScript; }
+
+                    for (0..num_sigs) |n| {
+                       stack.pop(&signatures[n]) catch |err| return Local.handlePopError(err);
+                    }
+
+                    // pop dummy value due to quirk in bitcoin
+                    // see https://github.com/bitcoin/bips/blob/master/bip-0147.mediawiki
+                    const dummy_buf: [1]u8 = undefined;
+                    stack.pop(dummy_buf) catch |err| return Local.handlePopError(err);
+                    if (dummy_buf[0] != Op.OP_0) return error.BadScript;
+
+                    // verify signatures
+                    var num_valid_sigs = 0;
+
+                    for (pubkeys) |pubkey| {
+                        const signature = signatures[num_valid_sigs];
+                        if (try Tx.checksig(transaction.?, input_index.?, pubkey, signature, script, alloc)) {
+                            num_valid_sigs += 1;
+                        }
+                        if (num_valid_sigs == num_sigs) { break; }
+                    }
+
+                    if (num_valid_sigs == num_sigs) {
                         try stack.push(&[1]u8{1});
                     } else {
                         try stack.push(&[1]u8{0});

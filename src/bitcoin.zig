@@ -819,7 +819,7 @@ pub const Script = struct {
 
                     for (0..@intCast(num_keys)) |n| {
                         const key = stack.pop(&buffer_pubkey) catch |err| return Local.handlePopError(err);
-                        @memcpy(pubkeys[n][0..], key);
+                        @memcpy(pubkeys[n][0..key.len], key[0..]);
                     }
 
                     const num_sigs: usize = @intCast(stack.popInt() catch return error.BadScript);
@@ -827,11 +827,12 @@ pub const Script = struct {
                     if (num_sigs > num_keys) {
                         stack.clear();
                         try stack.push(&[1]u8{0});
+                        return;
                     }
 
                     for (0..@intCast(num_sigs)) |n| {
                         const sig = stack.pop(&buffer_signature) catch |err| return Local.handlePopError(err);
-                        @memcpy(signatures[n][0..], sig);
+                        @memcpy(signatures[n][0..sig.len], sig[0..]);
                     }
 
                     // pop dummy value due to quirk in bitcoin
@@ -860,9 +861,6 @@ pub const Script = struct {
                     } else {
                         try stack.push(&[1]u8{0});
                     }
-
-                    signatures[0][0] = 0;
-                    pubkeys[0][0] = 0;
                 },
                 else => {
                     var buffer: [100]u8 = undefined;

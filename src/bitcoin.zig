@@ -616,6 +616,10 @@ pub const Script = struct {
             }
             return true;
         }
+
+        fn clear(self: *Stack) void {
+            self.top = 0;
+        }
     };
 
     // This must not be an enum. An enum is a type. I want constants of type u8. Which means this struct serves only as a namespace
@@ -651,7 +655,7 @@ pub const Script = struct {
         pub const OP_SHA256: u8 = 0xa8;
         pub const OP_HASH160: u8 = 0xa9;
         pub const OP_CHECKSIG: u8 = 0xac;
-        pub const OP_CHECK_MULTISIG: u8 = 0xae;
+        pub const OP_CHECKMULTISIG: u8 = 0xae;
 
         pub fn isSupported(opcode: u8) bool {
             if (opcode < OP_16) return true;
@@ -797,45 +801,58 @@ pub const Script = struct {
                         try stack.push(&[1]u8{0});
                     }
                 },
-                Op.OP_CHECK_MULTISIG => {
-                    if (transaction == null) @panic("Trying to execute OP_CHECK_MULTISIG with a null transaction");
-                    if (input_index == null) @panic("Trying to execute OP_CHECK_MULTISIG with a null input_index");
+                Op.OP_CHECKMULTISIG => {
+                    if (transaction == null) @panic("Trying to execute OP_CHECKMULTISIG with a null transaction");
+                    if (input_index == null) @panic("Trying to execute OP_CHECKMULTISIG with a null input_index");
 
                     const MAX_KEYS = 20;
                     const MAX_SIGNATURES = 20;
 
+                    var buffer_pubkey: [Stack.MAX_STACK_ELEMENT_SIZE]u8 = undefined;
+                    var buffer_signature: [Stack.MAX_STACK_ELEMENT_SIZE]u8 = undefined;
+
                     var pubkeys: [MAX_SIGNATURES][Stack.MAX_STACK_ELEMENT_SIZE]u8 = undefined;
                     var signatures: [MAX_SIGNATURES][Stack.MAX_STACK_ELEMENT_SIZE]u8 = undefined;
 
-                    const num_keys: i64 = stack.popInt() catch return error.BadScript;
+                    const num_keys: usize = @intCast(stack.popInt() catch return error.BadScript);
                     if (num_keys > MAX_KEYS) { return error.BadScript; }
 
-                    for (0..num_keys) |n| {
-                       stack.pop(&pubkeys[n]) catch |err| return Local.handlePopError(err);
+                    for (0..@intCast(num_keys)) |n| {
+                        const key = stack.pop(&buffer_pubkey) catch |err| return Local.handlePopError(err);
+                        @memcpy(pubkeys[n][0..], key);
                     }
 
-                    const num_sigs: i64 = stack.popInt() catch return error.BadScript;
-                    if (num_sigs > MAX_SIGNATURES) { return error.BadScript; }
+                    const num_sigs: usize = @intCast(stack.popInt() catch return error.BadScript);
+                    if (num_sigs > MAX_SIGNATURES or num_sigs > num_keys) { return error.BadScript; }
+                    if (num_sigs > num_keys) {
+                        stack.clear();
+                        try stack.push(&[1]u8{0});
+                    }
 
-                    for (0..num_sigs) |n| {
-                       stack.pop(&signatures[n]) catch |err| return Local.handlePopError(err);
+                    for (0..@intCast(num_sigs)) |n| {
+                        const sig = stack.pop(&buffer_signature) catch |err| return Local.handlePopError(err);
+                        @memcpy(signatures[n][0..], sig);
                     }
 
                     // pop dummy value due to quirk in bitcoin
                     // see https://github.com/bitcoin/bips/blob/master/bip-0147.mediawiki
-                    const dummy_buf: [1]u8 = undefined;
-                    stack.pop(dummy_buf) catch |err| return Local.handlePopError(err);
-                    if (dummy_buf[0] != Op.OP_0) return error.BadScript;
+                    var dummy_buf: [1]u8 = undefined;
+                    const dummy_val = (stack.pop(&dummy_buf) catch |err| return Local.handlePopError(err))[0];
+                    if (dummy_val != Op.OP_0) return error.BadScript;
 
-                    // verify signatures
-                    var num_valid_sigs = 0;
+                    // also used an index into signatures
+                    // signatures are guaranteed to be in order
+                    var num_valid_sigs: usize = 0;
 
-                    for (pubkeys) |pubkey| {
+                    for (0.., pubkeys) |key_idx, pubkey| {
                         const signature = signatures[num_valid_sigs];
-                        if (try Tx.checksig(transaction.?, input_index.?, pubkey, signature, script, alloc)) {
+                        if (try Tx.checksig(transaction.?, input_index.?, &pubkey, &signature, script, alloc)) {
                             num_valid_sigs += 1;
                         }
-                        if (num_valid_sigs == num_sigs) { break; }
+
+                        const remaining_keys = num_keys - key_idx;
+                        const remaining_sigs = num_sigs - num_valid_sigs;
+                        if (num_valid_sigs == num_sigs or remaining_keys < remaining_sigs) { break; }
                     }
 
                     if (num_valid_sigs == num_sigs) {
@@ -843,6 +860,9 @@ pub const Script = struct {
                     } else {
                         try stack.push(&[1]u8{0});
                     }
+
+                    signatures[0][0] = 0;
+                    pubkeys[0][0] = 0;
                 },
                 else => {
                     var buffer: [100]u8 = undefined;
@@ -1093,6 +1113,53 @@ test "script: Basic script execution" {
     const Op = Script.Opcode;
     const script_pub_key = [_]u8{Op.OP_SHA256} ++ [1]u8{answer_hash.len} ++ answer_hash ++ [_]u8{ Op.OP_EQUAL, Op.OP_VERIFY };
     const script_sig = [_]u8{Op.OP_PUSHDATA1} ++ [1]u8{answer.len} ++ answer.*;
+    try expect(try Script.validate(&script_sig, &script_pub_key, null, null, t_alloc));
+}
+test "script: P2MS" {
+    const Op = Script.Opcode;
+
+    const script_sig = [_]u8{
+        Op.OP_0,
+
+        Op.OP_PUSHDATA1, 72,
+        0x30, 0x45, 0x02, 0x21, 0x00, 0xaf, 0x20, 0x4e, 0xf9, 0x1b, 0x8d, 0xba, 0x58, 0x84, 0xdf, 0x50, 0xf8, 0x72, 0x19, 0xcc, 0xef,
+        0x22, 0x01, 0x4c, 0x21, 0xdd, 0x05, 0xaa, 0x44, 0x47, 0x0d, 0x4e, 0xd8, 0x00, 0xb7, 0xf6, 0xe4, 0x02, 0x20, 0x42, 0x8f, 0xe0,
+        0x58, 0x68, 0x4d, 0xb1, 0xbb, 0x2b, 0xfb, 0x60, 0x61, 0xbf, 0xf6, 0x70, 0x48, 0x59, 0x2c, 0x57, 0x4e, 0xff, 0xc2, 0x17, 0xf0,
+        0xd1, 0x50, 0xda, 0xed, 0xcf, 0x36, 0x78, 0x76, 0x01,
+
+        Op.OP_PUSHDATA1, 72,
+        0x30, 0x45, 0x02, 0x21, 0x00, 0xe8, 0x54, 0x7a, 0xa2, 0xc2, 0xa2, 0x76, 0x1a, 0x5a, 0x28, 0x80, 0x6d, 0x3a, 0xe0, 0xd1, 0xbb,
+        0xf0, 0xae, 0xff, 0x78, 0x2f, 0x90, 0x81, 0xdf, 0xea, 0x67, 0xb8, 0x6c, 0xac, 0xb3, 0x21, 0x34, 0x02, 0x20, 0x77, 0x1a, 0x16,
+        0x69, 0x29, 0x46, 0x9c, 0x34, 0x95, 0x9d, 0xaf, 0x72, 0x6a, 0x2a, 0xc0, 0xc2, 0x53, 0xf9, 0xaf, 0xf3, 0x91, 0xe5, 0x8a, 0x3c,
+        0x7c, 0xb4, 0x6d, 0x8b, 0x7e, 0x0f, 0xdc, 0x48, 0x01,
+    };
+
+    const script_pub_key = [_]u8{
+        Op.OP_2,
+
+        Op.OP_PUSHDATA1, 65,
+        0x04, 0xd8, 0x1f, 0xd5, 0x77, 0x27, 0x2b, 0xbe, 0x73, 0x30, 0x8c, 0x93, 0x00, 0x9e, 0xec, 0x5d, 0xc9, 0xfc, 0x31, 0x9f, 0xc1,
+        0xee, 0x2e, 0x70, 0x66, 0xe1, 0x72, 0x20, 0xa5, 0xd4, 0x7a, 0x18, 0x31, 0x45, 0x78, 0xbe, 0x2f, 0xae, 0xa3, 0x4b, 0x9f, 0x1f,
+        0x8c, 0xa0, 0x78, 0xf8, 0x62, 0x1a, 0xcd, 0x4b, 0xc2, 0x28, 0x97, 0xb0, 0x3d, 0xaa, 0x42, 0x2b, 0x9b, 0xf5, 0x66, 0x46, 0xb3,
+        0x42, 0xa2,
+
+        Op.OP_PUSHDATA1, 65,
+        0x04, 0xec, 0x3a, 0xff, 0xf0, 0xb2, 0xb6, 0x6e, 0x81, 0x52, 0xe9, 0x01, 0x8f, 0xe3, 0xbe, 0x3f, 0xc9, 0x2b, 0x30, 0xbf, 0x88,
+        0x6b, 0x34, 0x87, 0xa5, 0x25, 0x99, 0x7d, 0x00, 0xfd, 0x9d, 0xa2, 0xd0, 0x12, 0xdc, 0xe5, 0xd5, 0x27, 0x58, 0x54, 0xad, 0xc3,
+        0x10, 0x65, 0x72, 0xa5, 0xd1, 0xe1, 0x2d, 0x42, 0x11, 0xb2, 0x28, 0x42, 0x9f, 0x5a, 0x7b, 0x2f, 0x7b, 0xa9, 0x2e, 0xb0, 0x47,
+        0x5b, 0xb1,
+
+        Op.OP_PUSHDATA1, 65,
+        0x04, 0xb4, 0x9b, 0x49, 0x66, 0x84, 0xb0, 0x28, 0x55, 0xbc, 0x32, 0xf5, 0xda, 0xef, 0xa2, 0xe2, 0xe4, 0x06, 0xdb, 0x44, 0x18,
+        0xf3, 0xb8, 0x6b, 0xca, 0x51, 0x95, 0x60, 0x09, 0x51, 0xc7, 0xd9, 0x18, 0xcd, 0xbe, 0x5e, 0x6d, 0x37, 0x36, 0xec, 0x2a, 0xbf,
+        0x2d, 0xd7, 0x61, 0x09, 0x95, 0xc3, 0x08, 0x69, 0x76, 0xb2, 0xc0, 0xc7, 0xb4, 0xe4, 0x59, 0xd1, 0x0b, 0x34, 0xa3, 0x16, 0xd5,
+        0xa5, 0xe7,
+
+        Op.OP_3,
+
+        Op.OP_CHECKMULTISIG,
+    };
+
     try expect(try Script.validate(&script_sig, &script_pub_key, null, null, t_alloc));
 }
 

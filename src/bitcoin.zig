@@ -245,14 +245,14 @@ pub const Tx = struct {
                     .{
                         .amount = opt.amount,
                         .script_pubkey = script_pubkey: {
-                            var script_pubkey: []u8 = try opt.alloc.alloc(u8, 25);
+                            var script_pubkey: []u8 = try opt.alloc.alloc(u8, 24);
                             const Op = Script.Opcode;
 
                             script_pubkey[0] = Op.OP_HASH160;
                             script_pubkey[1] = Op.OP_PUSHDATA1;
                             script_pubkey[2] = 0x14; //P2SH hash is 20 bytes
-                            mem.copyForwards(u8, script_pubkey[3..23], opt.script_hash);
-                            script_pubkey[23] = Op.OP_EQUAL;
+                            mem.copyForwards(u8, script_pubkey[2..22], opt.script_hash);
+                            script_pubkey[22] = Op.OP_EQUAL;
                             break :script_pubkey script_pubkey;
                         },
                     },
@@ -569,6 +569,13 @@ pub const Script = struct {
 
         fn deinit(self: *const Self, alloc: mem.Allocator) void {
             alloc.free(self.data);
+        }
+
+        fn clone(self: *const Self, alloc: mem.Allocator) !Self {
+            return .{
+                .top = self.top,
+                .data = try alloc.dupe(u8, self.data),
+            };
         }
 
         /// Calling this function means the stack will be able to grow implicitly when pushing more than bytes than it fits
@@ -910,6 +917,8 @@ pub const Script = struct {
 
     pub const Error = error{Internal} || mem.Allocator.Error;
     pub fn validate(scriptSig: []const u8, scriptPubKey: []const u8, transaction: ?*Tx, input_index: ?usize, alloc: mem.Allocator) Error!bool {
+        const Op = Script.Opcode;
+
         var stack = try Stack.init(scriptSig.len + scriptPubKey.len, alloc);
         defer stack.deinit(alloc);
         stack.setAlloc(alloc);
@@ -924,12 +933,52 @@ pub const Script = struct {
             }
         };
 
+
+        // detect and handle special p2sh pattern
+        const is_p2sh = scriptPubKey[0] == Op.OP_HASH160 and
+                        scriptPubKey[22] == Op.OP_EQUAL;
+
         Script.run(scriptSig, &stack, transaction, input_index, alloc) catch |err| return Local.handleError(err);
+
+        var stack_clone: ?Stack = null;
+        if (is_p2sh) {
+            stack_clone = try stack.clone(alloc);
+        }
+
         Script.run(scriptPubKey, &stack, transaction, input_index, alloc) catch |err| return Local.handleError(err);
+
+        if (is_p2sh) {
+            stack.deinit(alloc);
+            stack = stack_clone.?;
+
+            var redeem_buf: [Stack.MAX_STACK_ELEMENT_SIZE]u8 = undefined;
+            const redeem_script = stack.pop(&redeem_buf) catch return false;
+            Script.run(redeem_script, &stack, transaction, input_index, alloc) catch |err| return Local.handleError(err);
+        }
 
         return stack.verify();
     }
+
+    // checks if all opcodes are push operations
+    // pub fn only_push_ops(scriptSig: []const u8) bool {
+    //     const Op = Script.Opcode;
+
+    //     var scriptReader = Cursor.init(scriptSig);
+    //     while (!scriptReader.ended()) {
+    //         const opcode = scriptReader.readInt(u8, .little);
+    //         switch(opcode) {
+    //             Op.OP_0 => {},
+    //             Op.OP_1...Op.OP_16 => {},
+    //             Op.OP_PUSHDATA1 => {
+    //                 const size = scriptReader.readInt(u8, .little);
+    //                 scriptReader.index += @intCast(size);
+    //             },
+    //             _ => return false,
+    //         }
+    //     }
+    // }
 };
+
 
 pub const Block = struct {
     version: u32 = 0x20000002,
@@ -1195,8 +1244,8 @@ test "script: P2MS" {
         Op.OP_CHECKMULTISIG,
     };
 
-    const script_hash: [20]u8 = undefined;
-    hash160(script_pub_key, script_hash);
+    var script_hash: [20]u8 = undefined;
+    hash160(&script_pub_key, &script_hash);
 
     try expect(try Script.validate(&script_sig, &script_pub_key, null, null, t_alloc));
 }

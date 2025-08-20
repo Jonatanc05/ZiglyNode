@@ -226,6 +226,43 @@ pub const Tx = struct {
         };
     }
 
+    const InitP2SHOpt = struct {
+        testnet: bool,
+        prev_txid: u256,
+        prev_output_index: u32,
+        amount: u64,
+        script_hash: []const u8,
+        alloc: mem.Allocator,
+    };
+    pub fn initP2PSH(opt: InitP2SHOpt) !Tx {
+        return .{
+            .version = 1,
+            .inputs = try opt.alloc.dupe(TxInput, &.{
+                .{ .txid = opt.prev_txid, .index = opt.prev_output_index, .script_sig = &[_]u8{}, .sequence = 0xfffffffd },
+            }),
+            .outputs = try opt.alloc.dupe(TxOutput, &outputs: {
+                var outputs: [1]TxOutput = .{
+                    .{
+                        .amount = opt.amount,
+                        .script_pubkey = script_pubkey: {
+                            var script_pubkey: []u8 = try opt.alloc.alloc(u8, 25);
+                            const Op = Script.Opcode;
+
+                            script_pubkey[0] = Op.OP_HASH160;
+                            script_pubkey[1] = Op.OP_PUSHDATA1;
+                            script_pubkey[2] = 0x14; //P2SH hash is 20 bytes
+                            mem.copyForwards(u8, script_pubkey[3..23], opt.script_hash);
+                            script_pubkey[23] = Op.OP_EQUAL;
+                            break :script_pubkey script_pubkey;
+                        },
+                    },
+                };
+                break :outputs outputs;
+            }),
+            .locktime = 0,
+        };
+    }
+
     pub fn deinit(self: *const Tx, alloc: mem.Allocator) void {
         for (self.inputs) |input| {
             alloc.free(input.script_sig);
@@ -1157,6 +1194,9 @@ test "script: P2MS" {
 
         Op.OP_CHECKMULTISIG,
     };
+
+    const script_hash: [20]u8 = undefined;
+    hash160(script_pub_key, script_hash);
 
     try expect(try Script.validate(&script_sig, &script_pub_key, null, null, t_alloc));
 }

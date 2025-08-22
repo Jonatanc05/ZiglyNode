@@ -13,19 +13,12 @@ pub const std_options = std.Options{
     .log_level = .info,
 };
 
-// TODO
-// - Concurrent connect calls
-//   - iterate on thread spawns
-// - Continous requests
-// - Check difficulty
-// - SPV
-// - Keep connections alive?
-
 const app_name = "ZiglyNode";
 const blockheaders_filename = "blockheaders.dat";
-/// This value is empirical and might change
-const max_concurrent_tasks = 12;
-const max_connections = 6;
+const max_connections = 8;
+/// This value might change
+const max_concurrent_tasks = max_connections;
+const connection_timeout_seconds = 5;
 comptime {
     // logic for `i 2` depends on that
     std.debug.assert(max_connections < 10);
@@ -163,7 +156,10 @@ pub fn main() !void {
 
                 const target_ip_address = try Prompt.promptIpAddress(.{ .default_value = "127.0.0.1" });
 
-                state_ptr.connections[new_peer_id].data = try Network.Node.connect(target_ip_address, app_name, allocator);
+                state_ptr.connections[new_peer_id].data = Network.Node.connect(target_ip_address, app_name, allocator, connection_timeout_seconds) catch |err| {
+                    std.log.err("Failed to connect to {}: {s}", .{ target_ip_address, @errorName(err) });
+                    continue;
+                };
                 state_ptr.connections[new_peer_id].alive = true;
                 state_ptr.active_connections += 1;
                 try stdout.print("\nConnection established successfully with \nPeer ID: {d}\nIP: {any}\nUser Agent: {s}\n\n", .{
@@ -393,6 +389,14 @@ fn requestBlocks(state: *State, connection: *const Network.Node.Connection, allo
     }
 }
 
+const ConnectWorkerParams = struct {
+    state: *State,
+    addr: *const Network.Protocol.Addr,
+    new_connections_count: *u32,
+    semaphore: *Thread.Semaphore,
+    alloc: std.mem.Allocator,
+};
+
 fn requestNewPeers(state: *State, connection: *const Network.Node.Connection, alloc: std.mem.Allocator, pool: *std.Thread.Pool) !void {
     if (state.active_connections >= max_connections) {
         std.log.err("Maximum number of connections reached: {}\n", .{max_connections});
@@ -420,58 +424,60 @@ fn requestNewPeers(state: *State, connection: *const Network.Node.Connection, al
         }.desc,
     );
     var new_connections_count: u32 = 0;
-    var event = Thread.ResetEvent{};
-    for (addr_ptr_array[0..@min(addr_ptr_array.len, max_concurrent_tasks)]) |addr| {
+    const num_tasks = @min(addr_ptr_array.len, max_concurrent_tasks);
+    var semaphore = Thread.Semaphore{ .permits = num_tasks };
+    for (addr_ptr_array[0..num_tasks]) |addr| {
         if (state.active_connections >= max_connections) break;
         try pool.spawn(
             struct {
-                fn inner(
-                    _state: *State,
-                    _addr: *const Network.Protocol.Addr,
-                    _new_connections_count: *u32,
-                    _event: *Thread.ResetEvent,
-                    _alloc: std.mem.Allocator,
-                ) void {
+                fn inner(worker_params: ConnectWorkerParams) void {
+                    worker_params.semaphore.wait();
+                    defer worker_params.semaphore.post();
                     const address = blk: {
-                        if (std.mem.eql(u8, _addr.ip[0..12], &.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff })) {
-                            break :blk Address.initIp4(_addr.ip[12..].*, _addr.port);
+                        if (std.mem.eql(u8, worker_params.addr.ip[0..12], &.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff })) {
+                            break :blk Address.initIp4(worker_params.addr.ip[12..].*, worker_params.addr.port);
                         } else {
-                            break :blk Address.initIp6(_addr.ip, _addr.port, 0, 0);
+                            break :blk Address.initIp6(worker_params.addr.ip, worker_params.addr.port, 0, 0);
                         }
                     };
-                    std.log.debug("Connecting to {}...", .{address});
-                    const new_connection = Network.Node.connect(address, app_name, _alloc) catch return;
-                    const connection_slot_ptr = for (&_state.connections) |*conn| {
+                    std.log.info("Connecting to {}...", .{address});
+                    const new_connection = Network.Node.connect(address, app_name, worker_params.alloc, connection_timeout_seconds) catch |err| {
+                        // In the future we'll do something like this to immediatly dequeue next address
+                        // worker_params.state.mutex.lock();
+                        // defer worker_params.state.mutex.unlock();
+                        // worker_params.pool.spawn
+                        std.log.info("Connection to {} failed: {s}", .{ address, @errorName(err) });
+                        return;
+                    };
+                    const connection_slot_ptr = for (&worker_params.state.connections) |*conn| {
                         if (!conn.alive) break conn;
                     } else {
-                        std.log.warn("Connection to {} completed but abandoned for lack of slots", .{address});
+                        std.log.info("Connection to {} completed but abandoned for lack of slots", .{address});
                         return;
                     };
 
-                    var set_event = false;
                     {
-                        _state.mutex.lock();
-                        defer _state.mutex.unlock();
-                        if (_state.active_connections >= max_connections) {
-                            std.log.warn("Connection to {} completed but abandoned because slots were filled while we waited for mutex lock", .{address});
-                            //_event.set();
+                        worker_params.state.mutex.lock();
+                        defer worker_params.state.mutex.unlock();
+                        if (worker_params.state.active_connections >= max_connections) {
+                            std.log.info("Connection to {} completed but abandoned because slots were filled while we waited for mutex lock", .{address});
+                            //worker_params.event.set();
                             return;
                         }
                         connection_slot_ptr.*.data = new_connection;
                         connection_slot_ptr.*.alive = true;
-                        _state.active_connections += 1;
-                        _new_connections_count.* += 1;
-                        set_event = _state.active_connections >= max_connections;
+                        worker_params.state.active_connections += 1;
+                        worker_params.new_connections_count.* += 1;
                     }
-                    if (set_event) _event.set();
-                    std.log.debug("Connected to {}", .{address});
+                    std.log.info("Connected to {}", .{address});
                 }
             }.inner,
-            .{ state, addr, &new_connections_count, &event, alloc },
+            .{ConnectWorkerParams{ .state = state, .addr = addr, .new_connections_count = &new_connections_count, .semaphore = &semaphore, .alloc = alloc }},
         );
     }
 
-    event.wait();
+    Thread.sleep(500_000_000);
+    for (0..num_tasks) |_| semaphore.wait();
 
     std.log.info("Connected to {} new peers\n", .{new_connections_count});
 }

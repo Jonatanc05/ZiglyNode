@@ -9,6 +9,7 @@
 ## Build Requirements
 
 - Currently building with Zig 0.14.1
+    - See https://ziglang.org/download/
 
 - Windows 11 and Ubuntu WSL are usually tested.
 
@@ -24,7 +25,7 @@ All features here are implemented (at least almost) from scratch. Using only the
 - Amateur cryptography (ECDSA)
 - Bitcoin primitives (Address, Transaction, Block) with serialization
 - Signing valid transactions (see https://mempool.space/signet/tx/d5cf8e758abc178121736c9cbb0defe075ef50da4dfb4e736b19f2a2ff66dd14)
-- Script interpreter (tested P2PK, P2PKH and P2WPKH)
+- Basic Script interpreter (tested P2PK, P2PKH and P2WPKH)
 - Ability to communicate with the Bitcoin network
     - Handshake with other peers
     - Get block headers, check they are valid and write/load them on disk
@@ -93,7 +94,24 @@ What do you want to do?
 3. ask for new peers and connect
 3
 info: Requesting for new peers and connecting...
-info: Connected to 5 new peers
+Unexpected and unsupported command received
+info: Connecting to [2a01:4f8:c2c:5011::1]:8333...
+info: Connecting to 62.171.183.58:8333...
+info: Connecting to 34.97.22.229:8333...
+info: Connecting to 85.158.1.212:8333...
+info: Connecting to 99.8.113.140:8333...
+info: Connecting to 174.161.123.250:8333...
+info: Connecting to 109.87.166.145:8333...
+info: Connecting to 76.28.244.128:8333...
+info: Connected to [2a01:4f8:c2c:5011::1]:8333
+info: Connected to 62.171.183.58:8333
+info: Connected to 109.87.166.145:8333
+info: Connected to 34.97.22.229:8333
+info: Connection to 85.158.1.212:8333 failed: Timeout
+info: Connection to 99.8.113.140:8333 failed: Timeout
+info: Connection to 76.28.244.128:8333 failed: Timeout
+info: Connection to 174.161.123.250:8333 failed: Timeout
+info: Connected to 4 new peers
 
 ################################################
 
@@ -128,4 +146,21 @@ Type 'i' followed by a number to interact with a peer (ex.: 'i 2')
 info: saving data on disk...
 
 ```
+
+
+## TODO
+
+- [ ] Networking improvements
+  - [x] Concurrent connect calls
+  - [ ] Consume next address immediately after a connection fails
+  - [ ] Event loop to answer spontaneous messages (not sure we need this)
+- [ ] Continous requests (enter synchronization mode)
+- [ ] P2SH
+- [ ] Check difficulty when receiving block headers
+- [ ] SPV
+- [ ] SegWit
+
+Issues:
+- [ ] We can't seem to receive blocks from `/Satoshi:25.1.0/`
+  - Minimum version we know that works is `/Satoshi:27.0.0/`
 

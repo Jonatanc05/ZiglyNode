@@ -2,6 +2,7 @@ const std = @import("std");
 const net = std.net;
 const assert = std.debug.assert;
 const Sha256 = std.crypto.hash.sha2.Sha256;
+const is_windows = @import("builtin").os.tag == .windows;
 
 // managed dependencies
 const Cursor = @import("cursor.zig").Cursor;
@@ -486,11 +487,69 @@ pub const Node = struct {
         user_agent: [30]u8,
     };
 
-    pub fn connect(address: net.Address, self_user_agent: []const u8, alloc: std.mem.Allocator) !Connection {
-        const stream = net.tcpConnectToAddress(address) catch |err| {
-            std.log.err("Failed to connect to {}: {s}", .{ address, @errorName(err) });
+    /// This function blocks current thread for, at most, `timeout_seconds`
+    pub fn connect(address: net.Address, self_user_agent: []const u8, alloc: std.mem.Allocator, timeout_seconds: comptime_int) !Connection {
+        const posix = std.posix;
+        const sockfd = posix.socket(address.any.family, posix.SOCK.STREAM, posix.IPPROTO.TCP) catch |err| {
+            std.log.err("Failed to create socket for {}: {s}", .{ address, @errorName(err) });
             return error.ConnectionError;
         };
+        const sock_connect = struct {
+            pub fn sock_connect(_sockfd: posix.socket_t, _address: net.Address) !void {
+                posix.connect(_sockfd, &_address.any, _address.getOsSockLen()) catch |err| switch (err) {
+                    posix.ConnectError.WouldBlock => {},
+                    else => {
+                        std.log.err("Failed to connect to {}: {s}", .{ _address, @errorName(err) });
+                        return error.ConnectionError;
+                    },
+                };
+            }
+        }.sock_connect;
+
+        const start_timestamp = std.time.milliTimestamp();
+        if (is_windows) {
+            const ws2 = std.os.windows.ws2_32;
+            var set_non_blocking: u32 = 1;
+            const ioctlsocket_result = ws2.ioctlsocket(sockfd, ws2.FIONBIO, &set_non_blocking);
+            std.debug.assert(ioctlsocket_result == 0);
+            try sock_connect(sockfd, address);
+
+            const pollfd = ws2.pollfd;
+            var fds = [1]pollfd{
+                pollfd{ .fd = sockfd, .events = ws2.POLL.OUT, .revents = 0 },
+            };
+            var sockets_affected = ws2.WSAPoll(&fds, @intCast(fds.len), 0);
+            while (sockets_affected == 0 and std.time.milliTimestamp() < start_timestamp + (timeout_seconds * 1000)) {
+                std.Thread.sleep(100_000_000);
+                sockets_affected = ws2.WSAPoll(&fds, @intCast(fds.len), 0);
+            }
+            if (fds[0].revents & ws2.POLL.OUT == 0) {
+                posix.close(sockfd);
+                return error.Timeout;
+            }
+        } else {
+            const flags = try posix.fcntl(sockfd, posix.F.GETFL, 0);
+            try posix.fcntl(sockfd, posix.F.SETFL, flags | posix.O.NONBLOCK);
+            try sock_connect(sockfd, address);
+            var fds = [1]posix.pollfd{
+                posix.pollfd{
+                    .fd = sockfd,
+                    .events = posix.POLL.OUT,
+                    .revents = 0,
+                },
+            };
+            var sockets_affected = posix.poll(&fds, 0);
+            while (sockets_affected == 0 and std.time.milliTimestamp() < start_timestamp + (timeout_seconds * 1000)) {
+                std.Thread.sleep(100_000_000);
+                sockets_affected = posix.poll(&fds, 0);
+            }
+            if (fds[0].revents & posix.POLL.OUT == 0) {
+                posix.close(sockfd);
+                return error.ConnectionError;
+            }
+        }
+        const stream = std.net.Stream{ .handle = sockfd };
+
         var connection = Connection{
             .peer_address = address,
             .peer_version = 0,
@@ -662,7 +721,7 @@ test "protocol: handshake and version" {
     //const host = "77.173.132.140"; // from bitcoin core's nodes_main.txt
     const port = 8333;
     const address = try net.Address.resolveIp(host, port);
-    const connection = try Node.connect(address, "networkzig-test", t_alloc);
+    const connection = try Node.connect(address, "networkzig-test", t_alloc, 15);
     try expect(connection.handshaked);
     try expect(connection.peer_version > 0);
 }

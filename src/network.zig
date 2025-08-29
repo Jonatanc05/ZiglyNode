@@ -509,7 +509,7 @@ pub const Node = struct {
         const start_timestamp = std.time.milliTimestamp();
         if (is_windows) {
             const ws2 = std.os.windows.ws2_32;
-            var set_non_blocking: u32 = 1;
+            var set_non_blocking: c_ulong = 1;
             const ioctlsocket_result = ws2.ioctlsocket(sockfd, ws2.FIONBIO, &set_non_blocking);
             std.debug.assert(ioctlsocket_result == 0);
             try sock_connect(sockfd, address);
@@ -528,8 +528,9 @@ pub const Node = struct {
                 return error.Timeout;
             }
         } else {
-            const flags = try posix.fcntl(sockfd, posix.F.GETFL, 0);
-            try posix.fcntl(sockfd, posix.F.SETFL, flags | posix.O.NONBLOCK);
+            var flags = try posix.fcntl(sockfd, posix.F.GETFL, 0);
+            flags |= 1 << @bitOffsetOf(posix.O, "NONBLOCK");
+            _ = try posix.fcntl(sockfd, posix.F.SETFL, flags);
             try sock_connect(sockfd, address);
             var fds = [1]posix.pollfd{
                 posix.pollfd{
@@ -538,15 +539,17 @@ pub const Node = struct {
                     .revents = 0,
                 },
             };
-            var sockets_affected = posix.poll(&fds, 0);
+            var sockets_affected = try posix.poll(&fds, 0);
             while (sockets_affected == 0 and std.time.milliTimestamp() < start_timestamp + (timeout_seconds * 1000)) {
                 std.Thread.sleep(100_000_000);
-                sockets_affected = posix.poll(&fds, 0);
+                sockets_affected = try posix.poll(&fds, 0);
             }
             if (fds[0].revents & posix.POLL.OUT == 0) {
                 posix.close(sockfd);
                 return error.ConnectionError;
             }
+            flags &= ~(@as(usize, 1 << @bitOffsetOf(posix.O, "NONBLOCK")));
+            _ = try posix.fcntl(sockfd, posix.F.SETFL, flags);
         }
         const stream = std.net.Stream{ .handle = sockfd };
 

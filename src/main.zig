@@ -177,8 +177,10 @@ pub fn main() !void {
                 }
 
                 const peer_id = (try std.fmt.charToDigit(trimmed[2], 10)) - 1;
-                if (!state_ptr.connections[peer_id].alive)
+                if (!state_ptr.connections[peer_id].alive) {
                     try stdout.print("That's not a valid peer id\n", .{});
+                    break :outerswitch;
+                }
 
                 const connection_ptr = &state_ptr.connections[peer_id].data;
                 try stdout.print("\nWhat do you want to do?\n", .{});
@@ -323,7 +325,7 @@ const Prompt = struct {
 
         try stdout.print("{s}{s}: ", .{ msg, default_indicator });
         var answer = try stdin.readUntilDelimiter(buffer, '\n');
-        if (answer[answer.len - 1] == '\r') answer = answer[0 .. answer.len - 1];
+        if (answer.len > 0 and answer[answer.len - 1] == '\r') answer = answer[0 .. answer.len - 1];
         if (answer.len == 0 and opt.default_value != null) {
             for (opt.default_value.?, 0..) |ch, i| buffer[i] = ch;
             return buffer[0..opt.default_value.?.len];

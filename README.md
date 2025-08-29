@@ -159,6 +159,7 @@ info: saving data on disk...
 - [ ] Check difficulty when receiving block headers
 - [ ] SPV
 - [ ] SegWit
+- [ ] Upgrade Zig version to 0.15.0
 
 Issues:
 - [ ] We can't seem to receive blocks from `/Satoshi:25.1.0/`

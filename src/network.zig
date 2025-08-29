@@ -719,14 +719,24 @@ test "protocol: message serialization" {
 }
 
 test "protocol: handshake and version" {
-    //const host = "58.96.123.120"; // from bitcoin core's nodes_main.txt
-    const host = "74.220.255.190"; // from bitcoin core's nodes_main.txt
-    //const host = "77.173.132.140"; // from bitcoin core's nodes_main.txt
+    // These addresses come from bitcoin core's nodes_main.txt
+    const hosts: []const []const u8 = &.{ "58.96.123.120", "74.220.255.190", "77.173.132.140" };
     const port = 8333;
-    const address = try net.Address.resolveIp(host, port);
-    const connection = try Node.connect(address, "networkzig-test", t_alloc, 15);
-    try expect(connection.handshaked);
-    try expect(connection.peer_version > 0);
+
+    var connections_failed: u32 = 0;
+    for (hosts) |host| {
+        const address = try net.Address.resolveIp(host, port);
+        const connection = Node.connect(address, "networkzig-test", t_alloc, 15) catch {
+            connections_failed += 1;
+            continue;
+        };
+        try expect(connection.handshaked);
+        try expect(connection.peer_version > 0);
+        break; // Success
+    }
+
+    if (connections_failed == hosts.len)
+        return error.NoConnectionsSucceeded;
 }
 
 //#endregion

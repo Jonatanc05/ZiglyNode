@@ -177,8 +177,10 @@ pub fn main() !void {
                 }
 
                 const peer_id = (try std.fmt.charToDigit(trimmed[2], 10)) - 1;
-                if (!state_ptr.connections[peer_id].alive)
+                if (!state_ptr.connections[peer_id].alive) {
                     try stdout.print("That's not a valid peer id\n", .{});
+                    break :outerswitch;
+                }
 
                 const connection_ptr = &state_ptr.connections[peer_id].data;
                 try stdout.print("\nWhat do you want to do?\n", .{});

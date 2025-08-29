@@ -548,6 +548,8 @@ pub const Node = struct {
                 posix.close(sockfd);
                 return error.ConnectionError;
             }
+            flags &= ~(@as(usize, 1 << @bitOffsetOf(posix.O, "NONBLOCK")));
+            _ = try posix.fcntl(sockfd, posix.F.SETFL, flags);
         }
         const stream = std.net.Stream{ .handle = sockfd };
 

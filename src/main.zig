@@ -323,7 +323,7 @@ const Prompt = struct {
 
         try stdout.print("{s}{s}: ", .{ msg, default_indicator });
         var answer = try stdin.readUntilDelimiter(buffer, '\n');
-        if (answer[answer.len - 1] == '\r') answer = answer[0 .. answer.len - 1];
+        if (answer.len > 0 and answer[answer.len - 1] == '\r') answer = answer[0 .. answer.len - 1];
         if (answer.len == 0 and opt.default_value != null) {
             for (opt.default_value.?, 0..) |ch, i| buffer[i] = ch;
             return buffer[0..opt.default_value.?.len];

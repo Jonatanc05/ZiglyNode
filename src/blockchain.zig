@@ -3,8 +3,6 @@ const std = @import("std");
 const Bitcoin = @import("bitcoin.zig");
 const Network = @import("network.zig");
 
-usingnamespace Bitcoin;
-
 pub const genesis_block_hash: u256 = 0x000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f;
 
 pub const genesis_block = Bitcoin.Block{

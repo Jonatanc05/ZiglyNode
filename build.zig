@@ -14,9 +14,11 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = "ZiglyNode",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     exe.addIncludePath(b.path("include"));
 
@@ -60,9 +62,12 @@ pub fn build(b: *std.Build) void {
 
     for (files) |file| {
         const t = b.addTest(.{
-            .root_source_file = b.path(file),
-            .target = target,
-            .optimize = optimize,
+            //.name = file,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(file),
+                .target = target,
+                .optimize = optimize,
+            }),
         });
         t.root_module.addIncludePath(b.path("include"));
         const test_artifact = b.addRunArtifact(t);

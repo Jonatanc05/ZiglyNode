@@ -185,6 +185,7 @@ pub const Tx = struct {
         sequence: u32 = 0xfffffffd,
     };
     pub const TxOutput = struct {
+        /// Given in sats
         amount: u64,
         script_pubkey: []const u8,
     };
@@ -193,6 +194,7 @@ pub const Tx = struct {
         testnet: bool,
         prev_txid: u256,
         prev_output_index: u32,
+        /// Given in sats
         amount: u64,
         target_address: []const u8,
         alloc: mem.Allocator,

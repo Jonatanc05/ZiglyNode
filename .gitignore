@@ -1,5 +1,4 @@
 .zig-cache/
 zig-out/
-src/.privkey
 .temp.txt
-
+*.privkey

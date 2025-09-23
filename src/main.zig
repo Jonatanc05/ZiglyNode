@@ -45,7 +45,7 @@ pub fn main() !void {
     };
     defer if (debug != null) {
         if (debug.?.deinit() == .leak) {
-            @breakpoint(); // not sure what to do
+            @breakpoint();
             std.debug.print("Memory leak detected!\n", .{});
         }
     };
@@ -54,7 +54,25 @@ pub fn main() !void {
     defer allocator.destroy(state_ptr);
 
     state_ptr.active_connections = 0;
-    state_ptr.privkey = try std.fmt.parseInt(u256, @embedFile(".privkey")[0..64], 16);
+    state_ptr.privkey = privkey: {
+        // Maybe use openAppFile later
+        const filename = ".privkey";
+        var resulting_file: std.fs.File = std.fs.cwd().openFile(filename, .{}) catch |err| switch (err) {
+            error.FileNotFound => blk: {
+                const file = try std.fs.cwd().createFile(filename, .{ .read = true });
+                try file.writeAll("0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a");
+                try file.sync();
+                try file.seekTo(0);
+                break :blk file;
+            },
+            else => unreachable,
+        };
+        defer resulting_file.close();
+        var buf: [64]u8 = undefined;
+        const num_bytes_read = try resulting_file.readAll(&buf);
+        std.debug.assert(num_bytes_read == 64);
+        break :privkey try std.fmt.parseInt(u256, &buf, 16);
+    };
     state_ptr.address = addr: {
         var addr_buf: [40]u8 = undefined;
         const address = Bitcoin.Address.fromPrivkey(state_ptr.privkey, true, &addr_buf);
@@ -68,31 +86,20 @@ pub fn main() !void {
     defer state_ptr.chain.deinit(allocator);
 
     read_blockheaders_from_disk: {
-        const appdata_dir = try std.fs.getAppDataDir(allocator, app_name);
-        defer allocator.free(appdata_dir);
-        std.fs.makeDirAbsolute(appdata_dir) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
-        };
-
-        const blockheaders_file_path = try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ appdata_dir, std.fs.path.sep, blockheaders_filename });
-        defer allocator.free(blockheaders_file_path);
-
-        const blockheaders_file = std.fs.openFileAbsolute(blockheaders_file_path, .{}) catch |err| switch (err) {
+        const blockheaders_file = openAppFile(allocator, blockheaders_filename) catch |err| switch(err) {
             error.FileNotFound => {
-                std.log.err("could not find existing {s}", .{blockheaders_file_path});
+                std.log.warn("could not find existing {s}", .{blockheaders_filename});
                 break :read_blockheaders_from_disk;
             },
             else => break :read_blockheaders_from_disk,
         };
         defer blockheaders_file.close();
-        std.log.info("loading block headers from {s}", .{blockheaders_file_path});
 
         const blockheaders_file_size = (try blockheaders_file.stat()).size;
         const bockheaders_file_valid = blockheaders_file_size != 0 and blockheaders_file_size % @sizeOf(Bitcoin.Block) == 0;
 
         if (!bockheaders_file_valid) {
-            std.log.err("The file {s} is corrupt... fix or delete it before proceeding", .{blockheaders_file_path});
+            std.log.err("The {s} file is corrupt... fix or delete it before proceeding", .{blockheaders_filename});
             break :read_blockheaders_from_disk;
         }
 
@@ -100,7 +107,7 @@ pub fn main() !void {
         for (state_ptr.chain.block_headers[1..][0..blockheaders_count], 0..) |*block, i| {
             var block_buffer: [@sizeOf(Bitcoin.Block)]u8 = undefined;
             _ = blockheaders_file.read(&block_buffer) catch |err| {
-                std.log.err("failed to read block {d} in {s}: {s}", .{ i, blockheaders_file_path, @errorName(err) });
+                std.log.err("failed to read block {d} in {s}: {s}", .{ i, blockheaders_filename, @errorName(err) });
                 break :read_blockheaders_from_disk;
             };
             for (std.mem.asBytes(block), std.mem.asBytes(&block_buffer)) |*out, read|
@@ -120,9 +127,9 @@ pub fn main() !void {
     while (true) {
         try stdout.print("\n################################################\n", .{});
         try stdout.print("\nHello dear hodler, tell me what can I do for you\n", .{});
-        try stdout.print("1. List peers (interact)\n", .{});
+        try stdout.print("1. View blockchain state\n", .{});
         try stdout.print("2. Connect to a new peer\n", .{});
-        try stdout.print("3. View blockchain state\n", .{});
+        try stdout.print("3. List peers (interact)\n", .{});
         try stdout.print("4. Sign a transaction\n", .{});
         try stdout.print("5. Exit\n\n", .{});
 
@@ -131,20 +138,12 @@ pub fn main() !void {
         const b = input[0];
         outerswitch: switch (b) {
             '1' => {
-                const anyConnection = for (state_ptr.connections) |conn| {
-                    if (conn.alive) break true;
-                } else false;
-                if (!anyConnection) {
-                    try stdout.print("\n<empty>\n", .{});
-                } else {
-                    try stdout.print("======== Peer list ========\n", .{});
-                    for (state_ptr.connections, 0..) |conn, i| {
-                        if (conn.alive)
-                            try stdout.print("\n{d}: {any} | {s}\n", .{ i + 1, conn.data.peer_address, conn.data.user_agent });
-                    }
-                    try stdout.print("\n===========================\n", .{});
-                    try stdout.print("\nType 'i' followed by a number to interact with a peer (ex.: 'i 2')\n", .{});
-                }
+                try stdout.print("\n=== Blockchain State ===\n", .{});
+                try stdout.print("Block headers count: {d}\n", .{state_ptr.chain.block_headers_count});
+
+                if (state_ptr.chain.block_headers_count > 1)
+                    try stdout.print("Latest block hash: {x:0>64}\n", .{state_ptr.chain.latest_block_header});
+                try stdout.print("========================\n", .{});
             },
             '2' => {
                 const new_peer_id = for (state_ptr.connections, 0..) |conn, i| {
@@ -168,6 +167,27 @@ pub fn main() !void {
                     state_ptr.connections[new_peer_id].data.user_agent,
                 });
             },
+            '3' => {
+                try stdout.print("======== Peer list ========\n", .{});
+                for (state_ptr.connections, 0..) |conn, i| {
+                    if (conn.alive)
+                        try stdout.print("\n{d}: {any} | {s}\n", .{ i + 1, conn.data.peer_address, conn.data.user_agent });
+                }
+                try stdout.print("\n===========================\n", .{});
+                try stdout.print("\nType 'i' followed by a number to interact with a peer (ex.: 'i 2')\n", .{});
+            },
+            '4' => {
+                var tx = try promptTransaction(allocator);
+                defer tx.deinit(allocator);
+                const input_index = 0;
+                var prompt_buf: [256]u8 = undefined;
+                const prev_pubkey = try Prompt.promptBytesHex(&prompt_buf, "Previous pubkey script (25 bytes for P2PKH)");
+                try tx.sign(state_ptr.privkey, input_index, prev_pubkey, allocator);
+                const bytes = try tx.serialize(allocator);
+                defer allocator.free(bytes);
+                try stdout.print("\nSigned transaction:\n{}\n", .{std.fmt.fmtSliceHexLower(bytes)});
+            },
+            '5' => break,
             'i' => {
                 std.debug.assert(max_connections < 10); // Based on this premise we assume 3 character input: 'i', ' ' and 'X' as single-digit number
                 const trimmed = std.mem.trimRight(u8, input, &.{ ' ', '\r', '\n' });
@@ -210,26 +230,6 @@ pub fn main() !void {
                     else => continue,
                 }
             },
-            '3' => {
-                try stdout.print("\n=== Blockchain State ===\n", .{});
-                try stdout.print("Block headers count: {d}\n", .{state_ptr.chain.block_headers_count});
-
-                if (state_ptr.chain.block_headers_count > 1)
-                    try stdout.print("Latest block hash: {x:0>64}\n", .{state_ptr.chain.latest_block_header});
-                try stdout.print("========================\n", .{});
-            },
-            '4' => {
-                var tx = try promptTransaction(allocator);
-                defer tx.deinit(allocator);
-                const input_index = 0;
-                var prompt_buf: [256]u8 = undefined;
-                const prev_pubkey = try Prompt.promptBytesHex(&prompt_buf, "Previous pubkey");
-                try tx.sign(state_ptr.privkey, input_index, prev_pubkey, allocator);
-                const bytes = try tx.serialize(allocator);
-                defer allocator.free(bytes);
-                try stdout.print("\nTransaction:\n{}\n", .{std.fmt.fmtSliceHexLower(bytes)});
-            },
-            '5' => break,
             0x0d => return, // EndOfFile
             else => {
                 try stdout.print("\ninvalid byte read: {x}\n", .{b});
@@ -278,7 +278,7 @@ fn promptTransaction(alloc: std.mem.Allocator) !Bitcoin.Tx {
     const prev_txid_bytes = try Prompt.promptBytesHex(&buf, "Previous TXID (32 bytes)");
     const prev_txid = try std.fmt.parseInt(u256, prev_txid_bytes[0..64], 16);
     const prev_output_index = try Prompt.promptInt(u32, "Previous output index", .{});
-    const amount = try Prompt.promptInt(u64, "Amount to send", .{});
+    const amount = try Prompt.promptInt(u64, "Amount to send (sats)", .{});
     const target_address = try Prompt.promptString(&buf2, "Target address", .{});
     return try Bitcoin.Tx.initP2PKH(.{
         .testnet = testnet,
@@ -399,6 +399,7 @@ const ConnectWorkerParams = struct {
     alloc: std.mem.Allocator,
 };
 
+/// Blocks current thread
 fn requestNewPeers(state: *State, connection: *const Network.Node.Connection, alloc: std.mem.Allocator, pool: *std.Thread.Pool) !void {
     if (state.active_connections >= max_connections) {
         std.log.err("Maximum number of connections reached: {}\n", .{max_connections});
@@ -482,4 +483,20 @@ fn requestNewPeers(state: *State, connection: *const Network.Node.Connection, al
     for (0..num_tasks) |_| semaphore.wait();
 
     std.log.info("Connected to {} new peers\n", .{new_connections_count});
+}
+
+const OpenAppFileError = std.fs.File.OpenError || std.fs.GetAppDataDirError;
+fn openAppFile(gpa: std.mem.Allocator, filename: []const u8) OpenAppFileError!std.fs.File {
+    const appdata_dir = try std.fs.getAppDataDir(gpa, app_name);
+    defer gpa.free(appdata_dir);
+    std.fs.makeDirAbsolute(appdata_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => std.debug.panicExtra(null, "Error calling std.fs.makeDirAbsolute(\"{s}\")", .{appdata_dir}),
+    };
+
+    const filepath = try std.fmt.allocPrint(gpa, "{s}{c}{s}", .{ appdata_dir, std.fs.path.sep, filename });
+    defer gpa.free(filepath);
+
+    std.log.info("loading from {s}", .{filepath});
+    return std.fs.openFileAbsolute(filepath, .{});
 }

@@ -9,12 +9,14 @@
 ## Build Requirements
 
 - Currently building with Zig 0.14.1
-    - See https://ziglang.org/download/
+    - See https://ziglang.org/download/#release-0.14.1
+    - You can also use [version-fox](https://vfox.dev/guides/quick-start.html) or [zvm](https://www.zvm.app/) to manage Zig versions
 
 - Windows 11 and Ubuntu WSL are usually tested.
 
-- Before compiling, add a file called `.privkey` to the `src` directory.
-    - `echo 0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a > src/.privkey`
+- Optionally add a file called `.privkey` to the your working directory containing a private key to test. Do not use a real key.
+    - `echo 0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a > ./.privkey`
+    - Will be created automatically (with a sample value) if absent
 
 This file should contain hex characters representing the private key to use when signing transactions. **DO NOT USE REAL WALLET INFORMATION WITH THIS SOFTWARE**.
 
@@ -45,13 +47,13 @@ Your address is mwWdV8mUAE2rQugQLtRJdrqxi3rf4R3xbq
 ################################################
 
 Hello dear hodler, tell me what can I do for you
-1. List peers (interact)
+1. View blockchain state
 2. Connect to a new peer
-3. View blockchain state
+3. List peers (interact)
 4. Sign a transaction
 5. Exit
 
-3
+1
 
 === Blockchain State ===
 Block headers count: 66001
@@ -79,7 +81,7 @@ Unexpected and unsupported command received
 Unexpected and unsupported command received
 2000 new blocks received!
 
-3
+1
 
 === Blockchain State ===
 Block headers count: 68001
@@ -116,13 +118,13 @@ info: Connected to 4 new peers
 ################################################
 
 Hello dear hodler, tell me what can I do for you
-1. List peers (interact)
+1. View blockchain state
 2. Connect to a new peer
-3. View blockchain state
+3. List peers (interact)
 4. Sign a transaction
 5. Exit
 
-1
+3
 
 ======== Peer list ========
 
@@ -155,10 +157,10 @@ info: saving data on disk...
   - [ ] Consume next address immediately after a connection fails
   - [ ] Event loop to answer spontaneous messages (not sure we need this)
 - [ ] Continous requests (enter synchronization mode)
-- [ ] P2SH
 - [ ] Check difficulty when receiving block headers
-- [ ] SPV
+- [ ] P2SH
 - [ ] SegWit
+- [ ] SPV
 
 Issues:
 - [ ] We can't seem to receive blocks from `/Satoshi:25.1.0/`

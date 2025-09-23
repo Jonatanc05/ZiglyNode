@@ -102,16 +102,15 @@ pub fn generateKeyPair() struct { pubk: CurvePoint, prvk: u256 } {
     return .{ .pubk = P, .prvk = e };
 }
 
-/// z is the message hash and e is the private key
-pub fn sign(z: u256, e: u256) Signature {
+pub fn sign(message_hash: u256, private_key: u256) Signature {
     const k = std.crypto.random.int(u256);
     const r = G.muli(k).x.?.value;
     const k_inv = FieldElement.modpow(k, secp256k1_n - 2, secp256k1_n);
     const s: u256 = s_calc: { // s = (r * e + z) * k_inv (mod n)
         var temp: u512 = r;
-        temp = temp * e;
+        temp = temp * private_key;
         temp = @mod(temp, secp256k1_n);
-        temp = temp + z;
+        temp = temp + message_hash;
         temp = @mod(temp, secp256k1_n);
         temp = temp * k_inv;
         temp = @mod(temp, secp256k1_n);
@@ -122,12 +121,11 @@ pub fn sign(z: u256, e: u256) Signature {
     return Signature{ .r = r, .s = s };
 }
 
-/// z is the message hash and P is the public key
-pub fn verify(z: u256, P: CurvePoint, sig: Signature) bool {
+pub fn verify(message_hash: u256, public_key: CurvePoint, sig: Signature) bool {
     const s_inv = FieldElement.modpow(sig.s, secp256k1_n - 2, secp256k1_n);
 
     const u: u256 = u_calc: { // u = z * s_inv (mod n)
-        var temp: u512 = z;
+        var temp: u512 = message_hash;
         temp = temp * s_inv;
         temp = @mod(temp, secp256k1_n);
         break :u_calc @intCast(temp);
@@ -140,7 +138,7 @@ pub fn verify(z: u256, P: CurvePoint, sig: Signature) bool {
         break :v_calc @intCast(temp);
     };
 
-    return G.muli(u).add(P.muli(v)).x.?.value == sig.r;
+    return G.muli(u).add(public_key.muli(v)).x.?.value == sig.r;
 }
 
 //#region TESTS #########################################################################

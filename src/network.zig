@@ -630,8 +630,9 @@ pub const Node = struct {
         var buffer = ([1]u8{0} ** header_len) ++ ([1]u8{0} ** (1024 * 256));
         var header_slice = buffer[0..header_len];
 
-        var reader = connection.stream.reader(&.{});
-        const read_count1 = reader.interface_state.readSliceShort(header_slice) catch |err| {
+        var reader_concrete = connection.stream.reader(&.{});
+        var reader = reader_concrete.interface();
+        const read_count1 = reader.readSliceShort(header_slice) catch |err| {
             std.log.err("Failed to read from socket at {f}: {t}", .{ connection.peer_address, err });
             return error.ReceiveError;
         };
@@ -640,7 +641,7 @@ pub const Node = struct {
         const payload_length = std.mem.readInt(u32, header_slice[16..][0..4], .little);
         const payload_slice = buffer[header_len..][0..payload_length];
 
-        const read_count2 = reader.interface_state.readSliceShort(payload_slice) catch |err| {
+        const read_count2 = reader.readSliceShort(payload_slice) catch |err| {
             std.log.err("Failed to read from socket at {f}: {t}", .{ connection.peer_address, err });
             return error.ReceiveError;
         };

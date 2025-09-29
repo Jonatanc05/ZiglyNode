@@ -1,7 +1,5 @@
 const std = @import("std");
 const Thread = std.Thread;
-const GenericWriter = std.io.GenericWriter;
-const GenericReader = std.io.GenericReader;
 const builtin = @import("builtin");
 
 const Bitcoin = @import("bitcoin.zig");
@@ -34,6 +32,9 @@ const State = struct {
     mutex: Thread.Mutex,
 };
 
+var stdout_buffer: [0]u8 = undefined;
+var stdin_buffer: [1024]u8 = undefined;
+
 pub fn main() !void {
     const allocator, var debug: ?std.heap.DebugAllocator(.{}) = blk: {
         if (builtin.mode == .Debug) {
@@ -59,6 +60,7 @@ pub fn main() !void {
         const filename = ".privkey";
         var resulting_file: std.fs.File = std.fs.cwd().openFile(filename, .{}) catch |err| switch (err) {
             error.FileNotFound => blk: {
+                std.log.info("couldn't find {s} file, creating...", .{filename});
                 const file = try std.fs.cwd().createFile(filename, .{ .read = true });
                 try file.writeAll("0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a");
                 try file.sync();
@@ -107,7 +109,7 @@ pub fn main() !void {
         for (state_ptr.chain.block_headers[1..][0..blockheaders_count], 0..) |*block, i| {
             var block_buffer: [@sizeOf(Bitcoin.Block)]u8 = undefined;
             _ = blockheaders_file.read(&block_buffer) catch |err| {
-                std.log.err("failed to read block {d} in {s}: {s}", .{ i, blockheaders_filename, @errorName(err) });
+                std.log.err("failed to read block {d} in {s}: {t}", .{ i, blockheaders_filename, err });
                 break :read_blockheaders_from_disk;
             };
             for (std.mem.asBytes(block), std.mem.asBytes(&block_buffer)) |*out, read|
@@ -121,8 +123,11 @@ pub fn main() !void {
         };
     }
 
-    const stdout = std.io.getStdOut().writer();
-    const stdin = std.io.getStdIn().reader();
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+    var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
+    const stdin = &stdin_reader.interface;
+
     try stdout.print("\nYour address is {s}\n", .{state_ptr.address});
     while (true) {
         try stdout.print("\n################################################\n", .{});
@@ -133,8 +138,7 @@ pub fn main() !void {
         try stdout.print("4. Sign a transaction\n", .{});
         try stdout.print("5. Exit\n\n", .{});
 
-        var buf: [9]u8 = undefined;
-        const input = try stdin.readUntilDelimiter(&buf, '\n');
+        const input = try stdin.takeDelimiterExclusive('\n');
         const b = input[0];
         outerswitch: switch (b) {
             '1' => {
@@ -153,15 +157,15 @@ pub fn main() !void {
                     break;
                 };
 
-                const target_ip_address = try Prompt.promptIpAddress(.{ .default_value = "127.0.0.1" });
+                const target_ip_address = try Prompt.promptIpAddress(stdout, stdin, .{ .default_value = "127.0.0.1" });
 
                 state_ptr.connections[new_peer_id].data = Network.Node.connect(target_ip_address, app_name, allocator, connection_timeout_seconds) catch |err| {
-                    std.log.err("Failed to connect to {}: {s}", .{ target_ip_address, @errorName(err) });
+                    std.log.err("Failed to connect to {f}: {t}", .{ target_ip_address, err });
                     continue;
                 };
                 state_ptr.connections[new_peer_id].alive = true;
                 state_ptr.active_connections += 1;
-                try stdout.print("\nConnection established successfully with \nPeer ID: {d}\nIP: {any}\nUser Agent: {s}\n\n", .{
+                try stdout.print("\nConnection established successfully with \nPeer ID: {d}\nIP: {f}\nUser Agent: {s}\n\n", .{
                     new_peer_id + 1,
                     state_ptr.connections[new_peer_id].data.peer_address,
                     state_ptr.connections[new_peer_id].data.user_agent,
@@ -171,21 +175,20 @@ pub fn main() !void {
                 try stdout.print("======== Peer list ========\n", .{});
                 for (state_ptr.connections, 0..) |conn, i| {
                     if (conn.alive)
-                        try stdout.print("\n{d}: {any} | {s}\n", .{ i + 1, conn.data.peer_address, conn.data.user_agent });
+                        try stdout.print("\n{d}: {f} | {s}\n", .{ i + 1, conn.data.peer_address, conn.data.user_agent });
                 }
                 try stdout.print("\n===========================\n", .{});
                 try stdout.print("\nType 'i' followed by a number to interact with a peer (ex.: 'i 2')\n", .{});
             },
             '4' => {
-                var tx = try promptTransaction(allocator);
+                var tx = try promptTransaction(allocator, stdout, stdin);
                 defer tx.deinit(allocator);
                 const input_index = 0;
-                var prompt_buf: [256]u8 = undefined;
-                const prev_pubkey = try Prompt.promptBytesHex(&prompt_buf, "Previous pubkey script (25 bytes for P2PKH)");
+                const prev_pubkey = try Prompt.promptBytesHex("Previous pubkey script (25 bytes for P2PKH)", stdout, stdin);
                 try tx.sign(state_ptr.privkey, input_index, prev_pubkey, allocator);
                 const bytes = try tx.serialize(allocator);
                 defer allocator.free(bytes);
-                try stdout.print("\nSigned transaction:\n{}\n", .{std.fmt.fmtSliceHexLower(bytes)});
+                try stdout.print("\nSigned transaction:\n{x}\n", .{bytes});
             },
             '5' => break,
             'i' => {
@@ -207,15 +210,15 @@ pub fn main() !void {
                 try stdout.print("1. disconnect from peer\n", .{});
                 try stdout.print("2. ask for block headers\n", .{});
                 try stdout.print("3. ask for new peers and connect \n", .{});
-                const action = try stdin.readUntilDelimiter(&buf, '\n');
+                const action = try stdin.takeDelimiterExclusive('\n');
                 switch (action[0]) {
                     '1' => {
                         state_ptr.connections[peer_id].alive = false;
                         state_ptr.active_connections -= 1;
                     },
                     '2' => {
-                        requestBlocks(state_ptr, connection_ptr, allocator) catch |err| {
-                            try stdout.print("Could not request blocks: {s}", .{@errorName(err)});
+                        requestBlocks(state_ptr, connection_ptr, allocator, stdout) catch |err| {
+                            try stdout.print("Could not request blocks: {t}", .{err});
                         };
                     },
                     '3' => {
@@ -251,7 +254,7 @@ pub fn main() !void {
         defer allocator.free(blockheaders_file_path);
 
         const blockheaders_file = std.fs.createFileAbsolute(blockheaders_file_path, .{}) catch |err| {
-            std.log.err("could not create {s}: {s}", .{ blockheaders_filename, @errorName(err) });
+            std.log.err("could not create {s}: {t}", .{ blockheaders_filename, err });
             break :save_blockheaders_to_disk;
         };
         defer blockheaders_file.close();
@@ -261,7 +264,7 @@ pub fn main() !void {
             for (state_ptr.chain.block_headers[1..state_ptr.chain.block_headers_count]) |block| {
                 const block_bytes = std.mem.asBytes(&block);
                 _ = blockheaders_file.write(block_bytes) catch |err| {
-                    std.log.err("failed to write block to {s}: {s}", .{ blockheaders_file_path, @errorName(err) });
+                    std.log.err("failed to write block to {s}: {t}", .{ blockheaders_file_path, err });
                     break :save_blockheaders_to_disk;
                 };
             }
@@ -269,17 +272,14 @@ pub fn main() !void {
     }
 }
 
-fn promptTransaction(alloc: std.mem.Allocator) !Bitcoin.Tx {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("NOTE: Only P2PKH is currently supported\n", .{});
-    const testnet = try Prompt.promptBool("Do you want to use testnet?");
-    var buf: [256]u8 = undefined;
-    var buf2: [256]u8 = undefined;
-    const prev_txid_bytes = try Prompt.promptBytesHex(&buf, "Previous TXID (32 bytes)");
+fn promptTransaction(alloc: std.mem.Allocator, out: *std.Io.Writer, in: *std.Io.Reader) !Bitcoin.Tx {
+    try out.print("NOTE: Only P2PKH is currently supported\n", .{});
+    const testnet = try Prompt.promptBool("Do you want to use testnet?", out, in);
+    const prev_txid_bytes = try Prompt.promptBytesHex("Previous TXID (32 bytes)", out, in);
     const prev_txid = try std.fmt.parseInt(u256, prev_txid_bytes[0..64], 16);
-    const prev_output_index = try Prompt.promptInt(u32, "Previous output index", .{});
-    const amount = try Prompt.promptInt(u64, "Amount to send (sats)", .{});
-    const target_address = try Prompt.promptString(&buf2, "Target address", .{});
+    const prev_output_index = try Prompt.promptInt(u32, "Previous output index", out, in, .{});
+    const amount = try Prompt.promptInt(u64, "Amount to send (sats)", out, in, .{});
+    const target_address = try Prompt.promptString("Target address", out, in, .{});
     return try Bitcoin.Tx.initP2PKH(.{
         .testnet = testnet,
         .prev_txid = prev_txid,
@@ -291,12 +291,9 @@ fn promptTransaction(alloc: std.mem.Allocator) !Bitcoin.Tx {
 }
 
 const Prompt = struct {
-    fn promptBool(msg: []const u8) !bool {
-        const stdout = std.io.getStdOut().writer();
-        const stdin = std.io.getStdIn().reader();
-        try stdout.print("{s} [y/n]: ", .{msg});
-        var buf: [9]u8 = undefined;
-        const input = try stdin.readUntilDelimiter(&buf, '\n');
+    fn promptBool(msg: []const u8, out: *std.Io.Writer, in: *std.Io.Reader) !bool {
+        try out.print("{s} [y/n]: ", .{msg});
+        const input = try in.takeDelimiterExclusive('\n');
         switch (input[0]) {
             'y' => return true,
             'n' => return false,
@@ -304,48 +301,41 @@ const Prompt = struct {
         }
     }
 
-    fn promptBytesHex(buffer: []u8, msg: []const u8) ![]u8 {
-        const stdout = std.io.getStdOut().writer();
-        const stdin = std.io.getStdIn().reader();
-        try stdout.print("{s} [hex]: ", .{msg});
-        var answer = try stdin.readUntilDelimiter(buffer, '\n');
+    fn promptBytesHex(msg: []const u8, out: *std.Io.Writer, in: *std.Io.Reader) ![]u8 {
+        try out.print("{s} [hex]: ", .{msg});
+        var answer = try in.takeDelimiterExclusive('\n');
         if (answer[answer.len - 1] == '\r') answer = answer[0 .. answer.len - 1];
         return answer;
     }
 
     const PromptStringOpts = struct { default_value: ?[]const u8 = null };
-    fn promptString(buffer: []u8, msg: []const u8, opt: PromptStringOpts) ![]u8 {
-        const stdout = std.io.getStdOut().writer();
-        const stdin = std.io.getStdIn().reader();
-
+    fn promptString(msg: []const u8, out: *std.Io.Writer, in: *std.Io.Reader, opt: PromptStringOpts) ![]const u8 {
         var buf: [100]u8 = undefined;
         var default_indicator: []u8 = &[0]u8{};
         if (opt.default_value) |default|
             default_indicator = try std.fmt.bufPrint(&buf, " [default={s}]", .{default});
 
-        try stdout.print("{s}{s}: ", .{ msg, default_indicator });
-        var answer = try stdin.readUntilDelimiter(buffer, '\n');
+        try out.print("{s}{s}: ", .{ msg, default_indicator });
+        var answer = try in.takeDelimiterExclusive('\n');
         if (answer.len > 0 and answer[answer.len - 1] == '\r') answer = answer[0 .. answer.len - 1];
         if (answer.len == 0 and opt.default_value != null) {
-            for (opt.default_value.?, 0..) |ch, i| buffer[i] = ch;
-            return buffer[0..opt.default_value.?.len];
+            // const arbitrary_value = 50;
+            // var result_buffer: [arbitrary_value]u8 = undefined;
+            return opt.default_value.?;
         }
 
         return answer;
     }
 
     const PromptIntOpts = struct { default_value: ?comptime_int = null };
-    fn promptInt(comptime T: type, msg: []const u8, opts: PromptIntOpts) !T {
-        const stdout = std.io.getStdOut().writer();
-        const stdin = std.io.getStdIn().reader();
+    fn promptInt(comptime T: type, msg: []const u8, out: *std.Io.Writer, in: *std.Io.Reader, opts: PromptIntOpts) !T {
         if (opts.default_value) |default| {
-            try stdout.print("{s} [numeric, default={}]: ", .{ msg, default });
+            try out.print("{s} [numeric, default={}]: ", .{ msg, default });
         } else {
-            try stdout.print("{s} [numeric]: ", .{msg});
+            try out.print("{s} [numeric]: ", .{msg});
         }
-        var buf: [256]u8 = undefined;
         var answer: []u8 = while (true) {
-            const input = try stdin.readUntilDelimiter(&buf, '\n');
+            const input = try in.takeDelimiterExclusive('\n');
             if (input.len > 0 and input[0] != '\n' and input[0] != '\r') {
                 break input;
             } else if (opts.default_value != null) {
@@ -358,17 +348,15 @@ const Prompt = struct {
     }
 
     const PromptIpOpts = struct { default_value: ?[]const u8 = null };
-    fn promptIpAddress(opt: PromptIpOpts) !Address {
-        var buf: [256]u8 = undefined;
-        const ip = try promptString(&buf, "Enter the IPv4 or IPv6 [without port]", .{ .default_value = opt.default_value });
-        const port = try promptInt(u16, "Enter the port", .{ .default_value = 8333 });
+    fn promptIpAddress(out: *std.Io.Writer, in: *std.Io.Reader, opt: PromptIpOpts) !Address {
+        const ip = try promptString("Enter the IPv4 or IPv6 [without port]", out, in, .{ .default_value = opt.default_value });
+        const port = try promptInt(u16, "Enter the port", out, in, .{ .default_value = 8333 });
         return try Address.resolveIp(ip, port);
     }
 };
 
-fn requestBlocks(state: *State, connection: *const Network.Node.Connection, alloc: std.mem.Allocator) !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("Requesting for block headers...\n", .{});
+fn requestBlocks(state: *State, connection: *const Network.Node.Connection, alloc: std.mem.Allocator, out: *std.Io.Writer) !void {
+    try out.print("Requesting for block headers...\n", .{});
     try Network.Node.sendMessage(connection, Network.Protocol.Message{
         .getheaders = .{
             .hash_count = 1,
@@ -383,7 +371,7 @@ fn requestBlocks(state: *State, connection: *const Network.Node.Connection, allo
     defer message.deinit(alloc);
     std.debug.assert(message == .headers);
     const blocks = message.headers.data;
-    try stdout.print("{d} new blocks received!\n", .{blocks.len});
+    try out.print("{d} new blocks received!\n", .{blocks.len});
     {
         state.mutex.lock();
         defer state.mutex.unlock();
@@ -443,19 +431,19 @@ fn requestNewPeers(state: *State, connection: *const Network.Node.Connection, al
                             break :blk Address.initIp6(worker_params.addr.ip, worker_params.addr.port, 0, 0);
                         }
                     };
-                    std.log.info("Connecting to {}...", .{address});
+                    std.log.info("Connecting to {f}...", .{address});
                     const new_connection = Network.Node.connect(address, app_name, worker_params.alloc, connection_timeout_seconds) catch |err| {
                         // In the future we'll do something like this to immediatly dequeue next address
                         // worker_params.state.mutex.lock();
                         // defer worker_params.state.mutex.unlock();
                         // worker_params.pool.spawn
-                        std.log.info("Connection to {} failed: {s}", .{ address, @errorName(err) });
+                        std.log.info("Connection to {f} failed: {t}", .{ address, err });
                         return;
                     };
                     const connection_slot_ptr = for (&worker_params.state.connections) |*conn| {
                         if (!conn.alive) break conn;
                     } else {
-                        std.log.info("Connection to {} completed but abandoned for lack of slots", .{address});
+                        std.log.info("Connection to {f} completed but abandoned for lack of slots", .{address});
                         return;
                     };
 
@@ -463,7 +451,7 @@ fn requestNewPeers(state: *State, connection: *const Network.Node.Connection, al
                         worker_params.state.mutex.lock();
                         defer worker_params.state.mutex.unlock();
                         if (worker_params.state.active_connections >= max_connections) {
-                            std.log.info("Connection to {} completed but abandoned because slots were filled while we waited for mutex lock", .{address});
+                            std.log.info("Connection to {f} completed but abandoned because slots were filled while we waited for mutex lock", .{address});
                             //worker_params.event.set();
                             return;
                         }
@@ -472,7 +460,7 @@ fn requestNewPeers(state: *State, connection: *const Network.Node.Connection, al
                         worker_params.state.active_connections += 1;
                         worker_params.new_connections_count.* += 1;
                     }
-                    std.log.info("Connected to {}", .{address});
+                    std.log.info("Connected to {f}", .{address});
                 }
             }.inner,
             .{ConnectWorkerParams{ .state = state, .addr = addr, .new_connections_count = &new_connections_count, .semaphore = &semaphore, .alloc = alloc }},
@@ -482,7 +470,7 @@ fn requestNewPeers(state: *State, connection: *const Network.Node.Connection, al
     Thread.sleep(500_000_000);
     for (0..num_tasks) |_| semaphore.wait();
 
-    std.log.info("Connected to {} new peers\n", .{new_connections_count});
+    std.log.info("Connected to {d} new peers\n", .{new_connections_count});
 }
 
 const OpenAppFileError = std.fs.File.OpenError || std.fs.GetAppDataDirError;
@@ -497,6 +485,6 @@ fn openAppFile(gpa: std.mem.Allocator, filename: []const u8) OpenAppFileError!st
     const filepath = try std.fmt.allocPrint(gpa, "{s}{c}{s}", .{ appdata_dir, std.fs.path.sep, filename });
     defer gpa.free(filepath);
 
-    std.log.info("loading from {s}", .{filepath});
+    std.log.info("loading {s}", .{filepath});
     return std.fs.openFileAbsolute(filepath, .{});
 }

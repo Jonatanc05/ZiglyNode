@@ -8,15 +8,15 @@
 
 ## Build Requirements
 
-- Currently building with Zig 0.14.1
-    - See https://ziglang.org/download/#release-0.14.1
-    - You can also use [version-fox](https://vfox.dev/guides/quick-start.html) or [zvm](https://www.zvm.app/) to manage Zig versions
+- Currently building with Zig 0.15.1
+    - See https://ziglang.org/download/#release-0.15.1
+    - You can use [version-fox](https://vfox.dev/guides/quick-start.html) or [zvm](https://www.zvm.app/) to manage Zig versions
 
 - Windows 11 and Ubuntu WSL are usually tested.
 
 - Optionally add a file called `.privkey` to the your working directory containing a private key to test. Do not use a real key.
-    - `echo 0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a > ./.privkey`
-    - Will be created automatically (with a sample value) if absent
+    - `echo 0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a > .privkey`
+    - Will be created automatically (with this sample value) if absent
 
 This file should contain hex characters representing the private key to use when signing transactions. **DO NOT USE REAL WALLET INFORMATION WITH THIS SOFTWARE**.
 

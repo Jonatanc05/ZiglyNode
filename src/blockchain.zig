@@ -49,9 +49,9 @@ pub const State = struct {
             block.hash(&hash);
             const pow = block.checkProofOfWork();
             const successive = std.mem.eql(u8, &block.prev_block, &prev_hash);
-            //std.log.debug("[{d:0>7}] {s}: PoW {s}, prev {s}", .{
+            //std.log.debug("[{d:0>7}] {x}: PoW {s}, prev {s}", .{
             //    self.block_headers_count + i,
-            //    std.fmt.fmtSliceHexLower(hash[0..10]),
+            //    hash[0..10],
             //    if (pow) "OK" else "XX",
             //    if (successive) "OK" else "XX",
             //});

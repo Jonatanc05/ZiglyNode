@@ -36,7 +36,7 @@ pub const Protocol = struct {
             count: u32,
             addr_array: []Addr,
 
-            pub fn serialize(self: @This(), writer: std.io.AnyWriter) anyerror!void {
+            pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
                 try Bitcoin.Aux.writeVarint(writer, self.count);
                 for (self.addr_array) |addr| {
                     try writer.writeInt(u32, addr.time, .little);
@@ -77,7 +77,7 @@ pub const Protocol = struct {
             /// 0 means "as much as possible"
             hash_final_block: u256,
 
-            pub fn serialize(self: @This(), writer: std.io.AnyWriter) anyerror!void {
+            pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
                 try writer.writeInt(i32, self.version, .little);
                 try Bitcoin.Aux.writeVarint(writer, self.hash_count);
                 try writer.writeInt(u256, self.hash_start_block, .little);
@@ -111,7 +111,7 @@ pub const Protocol = struct {
         headers: struct {
             data: []Bitcoin.Block,
 
-            pub fn serialize(self: @This(), writer: std.io.AnyWriter) anyerror!void {
+            pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
                 try Bitcoin.Aux.writeVarint(writer, @intCast(self.data.len));
                 for (self.data) |block| {
                     var buffer: [80]u8 = undefined;
@@ -141,20 +141,20 @@ pub const Protocol = struct {
         ping: struct {
             nonce: u64,
 
-            pub fn serialize(self: @This(), writer: std.io.AnyWriter) anyerror!void {
+            pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
                 try writer.writeInt(u64, self.nonce, .little);
             }
 
             pub fn parse(data: []const u8, unused: std.mem.Allocator) anyerror!ParseResult {
                 _ = unused;
-                var reader = Cursor.init(data);
+                var cursor = Cursor.init(data);
 
                 var res = ParseResult{
                     .value = Message{ .ping = .{ .nonce = undefined } },
                     .bytes_read_count = 0,
                 };
 
-                const nonce = reader.readInt(u64, .little);
+                const nonce = cursor.readInt(u64, .little);
                 res.value.ping.nonce = nonce;
                 res.bytes_read_count += 8;
 
@@ -164,19 +164,19 @@ pub const Protocol = struct {
         pong: struct {
             nonce: u64,
 
-            pub fn serialize(self: @This(), writer: std.io.AnyWriter) anyerror!void {
+            pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
                 try writer.writeInt(u64, self.nonce, .little);
             }
 
             pub fn parse(data: []const u8, unused: std.mem.Allocator) anyerror!ParseResult {
                 _ = unused;
-                var reader = Cursor.init(data);
+                var cursor = Cursor.init(data);
                 var res = ParseResult{
                     .value = Message{ .pong = .{ .nonce = undefined } },
                     .bytes_read_count = 0,
                 };
 
-                const nonce = reader.readInt(u64, .little);
+                const nonce = cursor.readInt(u64, .little);
                 res.value.pong.nonce = nonce;
                 res.bytes_read_count += 8;
 
@@ -200,7 +200,7 @@ pub const Protocol = struct {
             start_height: i32 = 0,
             relay: bool = false,
 
-            pub fn serialize(self: @This(), writer: std.io.AnyWriter) anyerror!void {
+            pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
                 try writer.writeInt(i32, self.version, .little);
                 try writer.writeInt(u64, self.services, .little);
                 try writer.writeInt(i64, self.timestamp, .little);
@@ -223,7 +223,7 @@ pub const Protocol = struct {
             }
 
             pub fn parse(data: []const u8, alloc: std.mem.Allocator) anyerror!ParseResult {
-                var reader = Cursor.init(data);
+                var cursor = Cursor.init(data);
                 var res = ParseResult{
                     .value = Message{ .version = .{ .timestamp = 0, .user_agent = undefined } },
                     .bytes_read_count = 0,
@@ -231,43 +231,43 @@ pub const Protocol = struct {
 
                 var out = &res.value.version;
 
-                out.version = reader.readInt(i32, .little);
+                out.version = cursor.readInt(i32, .little);
                 res.bytes_read_count += 4;
-                out.services = reader.readInt(u64, .little);
-                out.timestamp = reader.readInt(i64, .little);
+                out.services = cursor.readInt(u64, .little);
+                out.timestamp = cursor.readInt(i64, .little);
                 res.bytes_read_count += 8 * 2;
 
-                out.receiver_services = reader.readInt(u64, .little);
+                out.receiver_services = cursor.readInt(u64, .little);
                 res.bytes_read_count += 8;
 
-                reader.readBytes(&out.receiver_ip);
+                cursor.readBytes(&out.receiver_ip);
                 res.bytes_read_count += out.receiver_ip.len;
 
-                out.receiver_port = reader.readInt(u16, .little);
+                out.receiver_port = cursor.readInt(u16, .little);
                 res.bytes_read_count += 2;
 
-                out.sender_services = reader.readInt(u64, .little);
+                out.sender_services = cursor.readInt(u64, .little);
                 res.bytes_read_count += 8;
 
-                reader.readBytes(&out.sender_ip);
+                cursor.readBytes(&out.sender_ip);
                 res.bytes_read_count += out.sender_ip.len;
-                out.sender_port = reader.readInt(u16, .little);
+                out.sender_port = cursor.readInt(u16, .little);
                 res.bytes_read_count += 2;
 
-                out.nonce = reader.readInt(u64, .little);
+                out.nonce = cursor.readInt(u64, .little);
                 res.bytes_read_count += 8;
 
-                const user_agent_len = reader.readInt(u8, .little);
+                const user_agent_len = cursor.readInt(u8, .little);
                 res.bytes_read_count += 1;
 
                 var buffer: [256]u8 = undefined;
-                reader.readBytes(buffer[0..user_agent_len]);
+                cursor.readBytes(buffer[0..user_agent_len]);
                 out.user_agent = try alloc.dupe(u8, buffer[0..user_agent_len]);
                 res.bytes_read_count += user_agent_len;
 
-                out.start_height = reader.readInt(i32, .little);
+                out.start_height = cursor.readInt(i32, .little);
                 res.bytes_read_count += 4;
-                out.relay = (reader.readInt(u8, .little)) > 0;
+                out.relay = (cursor.readInt(u8, .little)) > 0;
                 res.bytes_read_count += 1;
 
                 return res;
@@ -293,7 +293,7 @@ pub const Protocol = struct {
                     .is_mandatory = true,
                     .name = "serialize",
                     .return_type = anyerror!void,
-                    .params = &[_]type{ void, std.io.AnyWriter },
+                    .params = &[_]type{ void, *std.Io.Writer },
                 },
                 ExpectedFunction{
                     .is_mandatory = true,
@@ -315,7 +315,7 @@ pub const Protocol = struct {
                     if (!@hasDecl(field.type, expected.name)) {
                         if (expected.is_mandatory) {
                             var buf: [200]u8 = undefined;
-                            @compileError(std.fmt.bufPrint(&buf, "A {} function is required for {}.{}", .{ expected.name, @typeName(T), field.name }) catch "E879234");
+                            @compileError(std.fmt.bufPrint(&buf, "A {s} function is required for {s}.{s}", .{ expected.name, @typeName(T), field.name }) catch "E879234");
                         } else continue;
                     }
 
@@ -350,7 +350,7 @@ pub const Protocol = struct {
 
         pub fn NoPayloadMessage(comptime tag_name: []const u8) type {
             return struct {
-                pub fn serialize(self: @This(), writer: std.io.AnyWriter) anyerror!void {
+                pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
                     _ = self;
                     _ = writer;
                 }
@@ -365,8 +365,7 @@ pub const Protocol = struct {
 
         /// Includes the protocol headers (https://en.bitcoin.it/wiki/Protocol_documentation#Message_structure)
         pub fn serialize(self: *const Message, buffer: []u8) ![]u8 {
-            var stream = std.io.fixedBufferStream(buffer);
-            const writer = stream.writer();
+            var writer: std.Io.Writer = .fixed(buffer);
 
             // magic
             try writer.writeInt(u32, Protocol.magic_mainnet, .big);
@@ -380,14 +379,15 @@ pub const Protocol = struct {
             });
 
             // payload
-            std.debug.assert(writer.context.pos == 16);
+            std.debug.assert(writer.end == 16);
             // intentionally skipping 8 bytes cause we need payload to compute them
             var payload_buffer = buffer[24..];
-            var payload_stream = std.io.fixedBufferStream(payload_buffer);
+            //var payload_stream = std.io.fixedBufferStream(payload_buffer);
+            var payload_stream: std.Io.Writer = .fixed(payload_buffer);
             switch (self.*) {
-                inline else => |field| try field.serialize(payload_stream.writer().any()),
+                inline else => |field| try field.serialize(&payload_stream),
             }
-            const payload_size = payload_stream.pos;
+            const payload_size = payload_stream.end;
 
             // length
             try writer.writeInt(u32, @intCast(payload_size), .little);
@@ -398,40 +398,37 @@ pub const Protocol = struct {
             Sha256.hash(&hash, &hash, .{});
             try writer.writeAll(hash[0..4]);
 
-            return buffer[0 .. writer.context.pos + payload_size];
+            return buffer[0 .. writer.end + payload_size];
         }
 
         const ParseResult = struct { value: Message, bytes_read_count: u32 };
 
         pub fn parse(bytes: []u8, alloc: std.mem.Allocator) !ParseResult {
-            var strm = std.io.fixedBufferStream(bytes);
-            var reader = strm.reader();
+            var reader: std.Io.Reader = .fixed(bytes);
             var res: ParseResult = .{
                 .value = undefined,
                 .bytes_read_count = 0,
             };
-            defer res.bytes_read_count = @intCast(reader.context.pos);
+            defer res.bytes_read_count = @intCast(reader.seek);
 
-            const magic = try reader.readInt(u32, .big);
+            const magic = try reader.takeInt(u32, .big);
             if (magic != magic_mainnet and magic != magic_testnet) // might try to assert the magic read and the current context in the future
                 return error.MagicNumberExpected;
 
-            var command: [12]u8 = [_]u8{0} ** 12;
-            assert(try reader.readAll(&command) == 12);
+            const command = try reader.takeArray(12);
 
-            const payload_size = try reader.readInt(u32, .little);
+            const payload_size = try reader.takeInt(u32, .little);
 
-            var checksum_read: [4]u8 = undefined;
-            assert(try reader.readAll(&checksum_read) == 4);
+            const checksum_read = try reader.takeArray(4);
 
-            const payload_slice = bytes[reader.context.pos..][0..payload_size];
+            const payload_slice = bytes[reader.seek..][0..payload_size];
             // checksum validation
             {
                 var hash: [32]u8 = undefined;
                 Sha256.hash(payload_slice, &hash, .{});
                 Sha256.hash(&hash, &hash, .{});
                 const calculated_checksum: []u8 = hash[0..4];
-                if (!std.mem.eql(u8, &checksum_read, calculated_checksum)) {
+                if (!std.mem.eql(u8, checksum_read, calculated_checksum)) {
                     return error.ChecksumMismatch;
                 }
             }
@@ -491,7 +488,7 @@ pub const Node = struct {
     pub fn connect(address: net.Address, self_user_agent: []const u8, alloc: std.mem.Allocator, timeout_seconds: comptime_int) !Connection {
         const posix = std.posix;
         const sockfd = posix.socket(address.any.family, posix.SOCK.STREAM, posix.IPPROTO.TCP) catch |err| {
-            std.log.err("Failed to create socket for {}: {s}", .{ address, @errorName(err) });
+            std.log.err("Failed to create socket for {f}: {t}", .{ address, err });
             return error.ConnectionError;
         };
         const sock_connect = struct {
@@ -499,7 +496,7 @@ pub const Node = struct {
                 posix.connect(_sockfd, &_address.any, _address.getOsSockLen()) catch |err| switch (err) {
                     posix.ConnectError.WouldBlock => {},
                     else => {
-                        std.log.err("Failed to connect to {}: {s}", .{ _address, @errorName(err) });
+                        std.log.err("Failed to connect to {f}: {t}", .{ _address, err });
                         return error.ConnectionError;
                     },
                 };
@@ -514,9 +511,8 @@ pub const Node = struct {
             std.debug.assert(ioctlsocket_result == 0);
             try sock_connect(sockfd, address);
 
-            const pollfd = ws2.pollfd;
-            var fds = [1]pollfd{
-                pollfd{ .fd = sockfd, .events = ws2.POLL.OUT, .revents = 0 },
+            var fds = [1]ws2.pollfd{
+                ws2.pollfd{ .fd = sockfd, .events = ws2.POLL.OUT, .revents = 0 },
             };
             var sockets_affected = ws2.WSAPoll(&fds, @intCast(fds.len), 0);
             while (sockets_affected == 0 and std.time.milliTimestamp() < start_timestamp + (timeout_seconds * 1000)) {
@@ -618,13 +614,13 @@ pub const Node = struct {
         std.log.debug("Sending message \"{s}\" with following payload ({d} bytes):", .{ @tagName(message), data.len - Protocol.header_len });
         const debug_clip_index = 1000;
         if (data.len > (debug_clip_index + Protocol.header_len)) {
-            std.log.debug("{s}... (+{} bytes)", .{ std.fmt.fmtSliceHexLower(data[Protocol.header_len..][0..debug_clip_index]), data.len - debug_clip_index - Protocol.header_len });
+            std.log.debug("{x}... (+{d} bytes)", .{ data[Protocol.header_len..][0..debug_clip_index], data.len - debug_clip_index - Protocol.header_len });
         } else {
-            std.log.debug("{s}", .{std.fmt.fmtSliceHexLower(data[Protocol.header_len..])});
+            std.log.debug("{x}", .{data[Protocol.header_len..]});
         }
         connection.stream.writeAll(data) catch |err| {
-            std.log.err("Failed to write to socket at {any}: {s}", .{ connection.peer_address, @errorName(err) });
-            return error.SendError;
+           std.log.err("Failed to write to socket at {f}: {t}", .{ connection.peer_address, err });
+           return error.SendError;
         };
     }
 
@@ -634,8 +630,9 @@ pub const Node = struct {
         var buffer = ([1]u8{0} ** header_len) ++ ([1]u8{0} ** (1024 * 256));
         var header_slice = buffer[0..header_len];
 
-        const read_count1 = connection.stream.readAtLeast(header_slice, header_len) catch |err| {
-            std.log.err("Failed to read from socket at {any}: {s}", .{ connection.peer_address, @errorName(err) });
+        var reader = connection.stream.reader(&.{});
+        const read_count1 = reader.interface_state.readSliceShort(header_slice) catch |err| {
+            std.log.err("Failed to read from socket at {f}: {t}", .{ connection.peer_address, err });
             return error.ReceiveError;
         };
         if (read_count1 < header_len) return error.NoMessages;
@@ -643,8 +640,8 @@ pub const Node = struct {
         const payload_length = std.mem.readInt(u32, header_slice[16..][0..4], .little);
         const payload_slice = buffer[header_len..][0..payload_length];
 
-        const read_count2 = connection.stream.readAtLeast(payload_slice, payload_length) catch |err| {
-            std.log.err("Failed to read from socket at {any}: {s}", .{ connection.peer_address, @errorName(err) });
+        const read_count2 = reader.interface_state.readSliceShort(payload_slice) catch |err| {
+            std.log.err("Failed to read from socket at {f}: {t}", .{ connection.peer_address, err });
             return error.ReceiveError;
         };
         if (read_count2 < payload_length) return error.ReceiveError;
@@ -652,9 +649,9 @@ pub const Node = struct {
         std.log.debug("Received message \"{s}\" with the following payload ({d} bytes):", .{ header_slice[4..16], payload_length });
         const debug_clip_index = 1000;
         if (payload_slice.len > debug_clip_index) {
-            std.log.debug("{s}... (+{} bytes)", .{ std.fmt.fmtSliceHexLower(payload_slice[0..debug_clip_index]), payload_slice.len - debug_clip_index });
+            std.log.debug("{s}... (+{x} bytes)", .{ payload_slice[0..debug_clip_index], payload_slice.len - debug_clip_index });
         } else {
-            std.log.debug("{s}", .{std.fmt.fmtSliceHexLower(payload_slice)});
+            std.log.debug("{s}", .{payload_slice});
         }
 
         const result = try Protocol.Message.parse(buffer[0..], alloc);

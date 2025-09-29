@@ -16,7 +16,7 @@ const Cursor = @import("cursor.zig").Cursor;
 
 pub const Aux = struct {
     /// writes little endian
-    pub fn writeVarint(stream: std.io.AnyWriter, value: u32) !void {
+    pub fn writeVarint(stream: *std.Io.Writer, value: u32) error{WriteFailed}!void {
         switch (value) {
             0...0xfc => {
                 try stream.writeInt(u8, @intCast(value), .little);
@@ -346,9 +346,10 @@ pub const Tx = struct {
     /// Returns a slice owned by the caller
     pub fn serialize(self: *const Tx, alloc: mem.Allocator) mem.Allocator.Error![]u8 {
         var bytes = try std.ArrayList(u8).initCapacity(alloc, 100);
-        defer bytes.deinit();
-
-        const writer = bytes.writer();
+        // Takes ownership, thus no need to deinit `bytes`
+        var writer_concrete: std.Io.Writer.Allocating = .fromArrayList(alloc, &bytes);
+        defer writer_concrete.deinit();
+        var writer = &writer_concrete.writer;
 
         writer.writeInt(u32, self.version, .little) catch return mem.Allocator.Error.OutOfMemory;
 
@@ -357,35 +358,35 @@ pub const Tx = struct {
             writer.writeByte(1) catch return mem.Allocator.Error.OutOfMemory;
         }
 
-        Aux.writeVarint(writer.any(), @intCast(self.inputs.len)) catch return mem.Allocator.Error.OutOfMemory;
+        Aux.writeVarint(writer, @intCast(self.inputs.len)) catch return mem.Allocator.Error.OutOfMemory;
         for (self.inputs) |input| {
             writer.writeInt(u256, input.txid, .little) catch return mem.Allocator.Error.OutOfMemory;
             writer.writeInt(u32, input.index, .little) catch return mem.Allocator.Error.OutOfMemory;
-            Aux.writeVarint(writer.any(), @intCast(input.script_sig.len)) catch return mem.Allocator.Error.OutOfMemory;
+            Aux.writeVarint(writer, @intCast(input.script_sig.len)) catch return mem.Allocator.Error.OutOfMemory;
             writer.writeAll(input.script_sig) catch return mem.Allocator.Error.OutOfMemory;
             writer.writeInt(u32, input.sequence, .little) catch return mem.Allocator.Error.OutOfMemory;
         }
 
-        Aux.writeVarint(writer.any(), @intCast(self.outputs.len)) catch return mem.Allocator.Error.OutOfMemory;
+        Aux.writeVarint(writer, @intCast(self.outputs.len)) catch return mem.Allocator.Error.OutOfMemory;
         for (self.outputs) |output| {
-            try writer.writeInt(u64, output.amount, .little);
-            Aux.writeVarint(writer.any(), @intCast(output.script_pubkey.len)) catch return mem.Allocator.Error.OutOfMemory;
-            try writer.writeAll(output.script_pubkey);
+            writer.writeInt(u64, output.amount, .little) catch return mem.Allocator.Error.OutOfMemory;
+            Aux.writeVarint(writer, @intCast(output.script_pubkey.len)) catch return mem.Allocator.Error.OutOfMemory;
+            writer.writeAll(output.script_pubkey) catch return mem.Allocator.Error.OutOfMemory;
         }
 
         if (self.witness) |witness| {
-            Aux.writeVarint(writer.any(), @intCast(witness.len)) catch return mem.Allocator.Error.OutOfMemory;
+            Aux.writeVarint(writer, @intCast(witness.len)) catch return mem.Allocator.Error.OutOfMemory;
             for (witness) |item| {
-                Aux.writeVarint(writer.any(), @intCast(item.len)) catch return mem.Allocator.Error.OutOfMemory;
-                try writer.writeAll(item);
+                Aux.writeVarint(writer, @intCast(item.len)) catch return mem.Allocator.Error.OutOfMemory;
+                writer.writeAll(item) catch return mem.Allocator.Error.OutOfMemory;
             }
         } else {
-            // MrRGnome said non-segwit transactions also have witness???
-            //Aux.writeVarint(writer.any(), 0) ;
+            // A guy (MrRGnome) told me non-segwit transactions also have witness???
+            //Aux.writeVarint(writer, 0) catch return mem.Allocator.Error.OutOfMemory;
         }
 
-        try writer.writeInt(u32, self.locktime, .little);
-        return bytes.toOwnedSlice();
+        writer.writeInt(u32, self.locktime, .little) catch return mem.Allocator.Error.OutOfMemory;
+        return writer_concrete.toOwnedSlice();
     }
 
     pub fn parse(data: []const u8, alloc: mem.Allocator) !Tx {
@@ -471,28 +472,28 @@ pub const Script = struct {
     };
 
     pub fn parse(bytes: []const u8, alloc: mem.Allocator) !Script {
-        var instructions = std.ArrayList(Instruction).init(alloc);
-        defer instructions.deinit();
+        var instructions = try std.ArrayList(Instruction).initCapacity(alloc, 100);
+        defer instructions.deinit(alloc);
 
         var cursor = Cursor.init(bytes);
         while (!cursor.ended()) {
             const opcode = cursor.readInt(u8, .little);
             switch (opcode) {
                 0x01...0x4b => { // Data
-                    try instructions.append(.{
+                    try instructions.append(alloc, .{
                         .data = try alloc.dupe(u8, bytes[cursor.index..][0..opcode]),
                     });
                     cursor.index += @intCast(opcode);
                 },
                 else => {
                     if (!Opcode.isSupported(opcode)) return error.OpcodeNotSupported;
-                    try instructions.append(.{ .opcode = opcode });
+                    try instructions.append(alloc, .{ .opcode = opcode });
                 },
             }
         }
 
         return Script{
-            .instructions = try instructions.toOwnedSlice(),
+            .instructions = try instructions.toOwnedSlice(alloc),
         };
     }
 

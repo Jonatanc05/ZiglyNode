@@ -618,7 +618,10 @@ pub const Node = struct {
         } else {
             std.log.debug("{x}", .{data[Protocol.header_len..]});
         }
-        connection.stream.writeAll(data) catch |err| {
+
+        var writer_concrete = connection.stream.writer(&.{});
+        var writer = &writer_concrete.interface;
+        writer.writeAll(data) catch |err| {
            std.log.err("Failed to write to socket at {f}: {t}", .{ connection.peer_address, err });
            return error.SendError;
         };

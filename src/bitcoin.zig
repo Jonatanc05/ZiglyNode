@@ -99,10 +99,11 @@ pub const Base58 = struct {
     }
 };
 
-fn hash160(bytes: []const u8, out: []u8) void {
-    var sha256_1: [33]u8 = undefined;
-    sha256_1[32] = 0x00;
-    Sha256.hash(bytes, sha256_1[0..32], .{});
+fn hash160(bytes: []const u8, out: [:0]u8) void {
+    var sha256_1: [32:0]u8 = @splat(undefined);
+    const unoptmize = @as(*[33]u8, @ptrCast(&sha256_1)).*;
+    for (unoptmize) |i| asm volatile( "" : : [val] "r" (i));
+    Sha256.hash(bytes, &sha256_1, .{});
     c_ripemd.calc_hash(&sha256_1, @ptrCast(out));
 }
 
@@ -114,9 +115,9 @@ pub const Address = struct {
 
     pub fn fromPubkey(pubkey: EllipticCurveLib.CurvePoint(u256), testnet: bool, buf: []u8) []u8 {
         const hash160_data: [21]u8 = hash160_data: {
-            var hash160_data: [21]u8 = undefined;
             var serialized_point: [33]u8 = undefined;
             pubkey.serialize(true, &serialized_point);
+            var hash160_data: [21:0]u8 = @splat(undefined);
             hash160(&serialized_point, hash160_data[1..]);
             hash160_data[0] = if (testnet) 0x6f else 0x00;
             break :hash160_data hash160_data;
@@ -782,7 +783,7 @@ pub const Script = struct {
                         Stack.PopError.OutBufferTooSmall => @panic("Not handling HASH160 for stack items larger than 520 bytes"),
                         else => Local.handlePopError(err),
                     };
-                    var hash160_data: [20]u8 = undefined;
+                    var hash160_data: [20:0]u8 = @splat(undefined);
                     hash160(value, &hash160_data);
                     try stack.push(&hash160_data);
                 },

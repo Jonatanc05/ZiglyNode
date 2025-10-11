@@ -154,8 +154,8 @@ info: saving data on disk...
 
 - [ ] Networking improvements
   - [x] Concurrent connect calls
-  - [ ] Consume next address immediately after a connection fails
-  - [ ] Event loop to answer spontaneous messages (not sure we need this)
+  - [ ] Consume next address immediately after a connection fails (not sure)
+  - [ ] Event loop to answer spontaneous messages (not sure)
 - [ ] Continous requests (enter synchronization mode)
 - [ ] Check difficulty when receiving block headers
 - [ ] P2SH
@@ -165,4 +165,5 @@ info: saving data on disk...
 Issues:
 - [ ] We can't seem to receive blocks from `/Satoshi:25.1.0/`
   - Minimum version we know that works is `/Satoshi:27.0.0/`
+  - Actually it might not be about version? `/Satoshi:25.0.0/` can work
 

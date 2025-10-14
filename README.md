@@ -155,11 +155,10 @@ info: saving data on disk...
 - [ ] Networking improvements
   - [x] Concurrent connect calls
   - [ ] Consume next address immediately after a connection fails (not sure)
-  - [ ] Event loop to answer spontaneous messages (not sure)
-- [ ] Continous requests (enter synchronization mode)
-- [ ] Check difficulty when receiving block headers
+- [x] Check difficulty when receiving block headers
 - [ ] P2SH
 - [ ] SegWit
+- [ ] Continous requests (enter synchronization mode)
 - [ ] SPV
 
 Issues:

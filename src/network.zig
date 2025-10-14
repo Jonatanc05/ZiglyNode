@@ -267,8 +267,13 @@ pub const Protocol = struct {
 
                 out.start_height = cursor.readInt(i32, .little);
                 res.bytes_read_count += 4;
-                out.relay = (cursor.readInt(u8, .little)) > 0;
-                res.bytes_read_count += 1;
+
+                if (out.version >= 70001) {
+                    out.relay = (cursor.readInt(u8, .little)) > 0;
+                    res.bytes_read_count += 1;
+                } else {
+                    out.relay = false;
+                }
 
                 return res;
             }

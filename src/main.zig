@@ -226,7 +226,9 @@ pub fn main() !void {
                         var buffer_alloc = std.heap.FixedBufferAllocator.init(&buffer);
                         var pool: Thread.Pool = undefined;
                         try pool.init(.{ .allocator = buffer_alloc.allocator() }); // no deinit cause we're using a stack buffer
-                        try requestNewPeers(state_ptr, connection_ptr, allocator, &pool);
+                        requestNewPeers(state_ptr, connection_ptr, allocator, &pool) catch {
+                            try stdout.print("Could not complete address list request to {f}\n", .{ connection_ptr.peer_address });
+                        };
                         while (pool.run_queue.popFirst() != null) {}
                         for (pool.threads) |thr| thr.detach();
                     },
@@ -317,13 +319,11 @@ const Prompt = struct {
 
         try out.print("{s}{s}: ", .{ msg, default_indicator });
         var answer = try in.takeDelimiterExclusive('\n');
-        if (answer.len > 0 and answer[answer.len - 1] == '\r') answer = answer[0 .. answer.len - 1];
-        if (answer.len == 0 and opt.default_value != null) {
-            // const arbitrary_value = 50;
-            // var result_buffer: [arbitrary_value]u8 = undefined;
-            return opt.default_value.?;
-        }
+        if (answer.len > 0 and answer[answer.len - 1] == '\r')
+            answer = answer[0 .. answer.len - 1];
 
+        if (answer.len == 0 and opt.default_value != null)
+            return opt.default_value.?;
         return answer;
     }
 
@@ -350,8 +350,10 @@ const Prompt = struct {
     const PromptIpOpts = struct { default_value: ?[]const u8 = null };
     fn promptIpAddress(out: *std.Io.Writer, in: *std.Io.Reader, opt: PromptIpOpts) !Address {
         const ip = try promptString("Enter the IPv4 or IPv6 [without port]", out, in, .{ .default_value = opt.default_value });
+        var ip_copy: [40]u8 = undefined;
+        for (ip, 0..) |_, i| ip_copy[i] = ip[i];
         const port = try promptInt(u16, "Enter the port", out, in, .{ .default_value = 8333 });
-        return try Address.resolveIp(ip, port);
+        return try Address.resolveIp(ip_copy[0..ip.len], port);
     }
 };
 

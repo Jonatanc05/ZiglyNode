@@ -139,6 +139,8 @@ pub fn main() !void {
         try stdout.print("5. Exit\n\n", .{});
 
         const input = try stdin.takeDelimiterExclusive('\n');
+        std.debug.assert(try stdin.discardShort(1) == 1);
+        if (input.len == 0) continue;
         const b = input[0];
         outerswitch: switch (b) {
             '1' => {
@@ -211,6 +213,7 @@ pub fn main() !void {
                 try stdout.print("2. ask for block headers\n", .{});
                 try stdout.print("3. ask for new peers and connect \n", .{});
                 const action = try stdin.takeDelimiterExclusive('\n');
+                std.debug.assert(try stdin.discardShort(1) == 1);
                 switch (action[0]) {
                     '1' => {
                         state_ptr.connections[peer_id].alive = false;
@@ -296,6 +299,7 @@ const Prompt = struct {
     fn promptBool(msg: []const u8, out: *std.Io.Writer, in: *std.Io.Reader) !bool {
         try out.print("{s} [y/n]: ", .{msg});
         const input = try in.takeDelimiterExclusive('\n');
+        std.debug.assert(try in.discardShort(1) == 1);
         switch (input[0]) {
             'y' => return true,
             'n' => return false,
@@ -306,6 +310,7 @@ const Prompt = struct {
     fn promptBytesHex(msg: []const u8, out: *std.Io.Writer, in: *std.Io.Reader) ![]u8 {
         try out.print("{s} [hex]: ", .{msg});
         var answer = try in.takeDelimiterExclusive('\n');
+        std.debug.assert(try in.discardShort(1) == 1);
         if (answer[answer.len - 1] == '\r') answer = answer[0 .. answer.len - 1];
         return answer;
     }
@@ -319,6 +324,7 @@ const Prompt = struct {
 
         try out.print("{s}{s}: ", .{ msg, default_indicator });
         var answer = try in.takeDelimiterExclusive('\n');
+        std.debug.assert(try in.discardShort(1) == 1);
         if (answer.len > 0 and answer[answer.len - 1] == '\r')
             answer = answer[0 .. answer.len - 1];
 
@@ -336,6 +342,7 @@ const Prompt = struct {
         }
         var answer: []u8 = while (true) {
             const input = try in.takeDelimiterExclusive('\n');
+            std.debug.assert(try in.discardShort(1) == 1);
             if (input.len > 0 and input[0] != '\n' and input[0] != '\r') {
                 break input;
             } else if (opts.default_value != null) {

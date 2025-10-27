@@ -8,8 +8,8 @@
 
 ## Build Requirements
 
-- Currently building with Zig 0.15.1
-    - See https://ziglang.org/download/#release-0.15.1
+- Currently building with Zig 0.15.X
+    - See https://ziglang.org/download/#release-0.15.2
     - You can use [version-fox](https://vfox.dev/guides/quick-start.html) or [zvm](https://www.zvm.app/) to manage Zig versions
 
 - Windows 11 and Ubuntu WSL are usually tested.

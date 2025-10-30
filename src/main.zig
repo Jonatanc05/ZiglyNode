@@ -191,6 +191,7 @@ pub fn main() !void {
                 const bytes = try tx.serialize(allocator);
                 defer allocator.free(bytes);
                 try stdout.print("\nSigned transaction:\n{x}\n", .{bytes});
+                try stdout.print("\nYou can verifiy the transaction contents using the command `bitcoin tx -json <hex>`\n", .{});
             },
             '5' => break,
             'i' => {
@@ -212,6 +213,7 @@ pub fn main() !void {
                 try stdout.print("1. disconnect from peer\n", .{});
                 try stdout.print("2. ask for block headers\n", .{});
                 try stdout.print("3. ask for new peers and connect \n", .{});
+                try stdout.print("4. ask for all block headers (takes time)\n", .{});
                 const action = try stdin.takeDelimiterExclusive('\n');
                 std.debug.assert(try stdin.discardShort(1) == 1);
                 switch (action[0]) {
@@ -220,9 +222,12 @@ pub fn main() !void {
                         state_ptr.active_connections -= 1;
                     },
                     '2' => {
-                        requestBlocks(state_ptr, connection_ptr, allocator, stdout) catch |err| {
+                        const result = requestBlocks(state_ptr, connection_ptr, allocator, stdout);
+                        if (result) |block_count| {
+                            try stdout.print("{d} new blocks received!\n", .{block_count});
+                        } else |err| {
                             try stdout.print("Could not request blocks: {t}", .{err});
-                        };
+                        }
                     },
                     '3' => {
                         var buffer: [max_concurrent_tasks * 105]u8 = undefined; // 105 is empirical and might change
@@ -234,6 +239,21 @@ pub fn main() !void {
                         };
                         while (pool.run_queue.popFirst() != null) {}
                         for (pool.threads) |thr| thr.detach();
+                    },
+                    '4' => {
+                        requests: while (true) {
+                            const result = requestBlocks(state_ptr, connection_ptr, allocator, stdout);
+                            if (result) |block_count| {
+                                try stdout.print("Total blocks: {d:0>7}\n", .{state_ptr.chain.block_headers_count});
+                                if (block_count < 2000) {
+                                    try stdout.print("Less than 2000 blocks received, assume end", .{}); // Obviously broken
+                                    break :requests;
+                                }
+                            } else |err| {
+                                try stdout.print("Could not request blocks: {t}", .{err});
+                                break :requests;
+                            }
+                        }
                     },
                     else => continue,
                 }
@@ -364,7 +384,7 @@ const Prompt = struct {
     }
 };
 
-fn requestBlocks(state: *State, connection: *const Network.Node.Connection, alloc: std.mem.Allocator, out: *std.Io.Writer) !void {
+fn requestBlocks(state: *State, connection: *const Network.Node.Connection, alloc: std.mem.Allocator, out: *std.Io.Writer) !usize {
     try out.print("Requesting for block headers...\n", .{});
     try Network.Node.sendMessage(connection, Network.Protocol.Message{
         .getheaders = .{
@@ -380,12 +400,12 @@ fn requestBlocks(state: *State, connection: *const Network.Node.Connection, allo
     defer message.deinit(alloc);
     std.debug.assert(message == .headers);
     const blocks = message.headers.data;
-    try out.print("{d} new blocks received!\n", .{blocks.len});
     {
         state.mutex.lock();
         defer state.mutex.unlock();
         try state.chain.append(blocks);
     }
+    return blocks.len;
 }
 
 const ConnectWorkerParams = struct {

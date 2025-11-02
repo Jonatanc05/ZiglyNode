@@ -115,8 +115,9 @@ pub const Protocol = struct {
                 try Bitcoin.Aux.writeVarint(writer, @intCast(self.data.len));
                 for (self.data) |block| {
                     var buffer: [80]u8 = undefined;
-                    const serialization = block.serialize(&buffer);
-                    try writer.writeAll(serialization);
+                    var bwriter: std.Io.Writer = .fixed(&buffer);
+                    block.serialize(&bwriter);
+                    try writer.writeAll(&buffer);
                     try writer.writeInt(u8, 0, .little);
                 }
             }
@@ -126,7 +127,8 @@ pub const Protocol = struct {
                 const count = cursor.readVarint();
                 const blocks = try alloc.alloc(Bitcoin.Block, count);
                 for (blocks) |*block| {
-                    block.* = Bitcoin.Block.parse(cursor.data[cursor.index..][0..80]);
+                    var reader: std.Io.Reader = .fixed(cursor.data[cursor.index..][0..80]);
+                    block.* = Bitcoin.Block.parse(&reader);
                     cursor.index += 80;
                     std.debug.assert(cursor.readInt(u8, .little) == 0);
                 }

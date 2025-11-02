@@ -19,6 +19,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
+        .use_llvm = true,
     });
     exe.addIncludePath(b.path("include"));
 
@@ -68,6 +69,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = optimize,
             }),
+            .use_llvm = true,
         });
         t.root_module.addIncludePath(b.path("include"));
         const test_artifact = b.addRunArtifact(t);

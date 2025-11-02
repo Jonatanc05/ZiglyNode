@@ -1,6 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
+/// Deprecated. TODO Delete this and replace with std.Io.Reader.fixed()
 pub const Cursor = struct {
     data: []const u8,
     index: usize = 0,

@@ -88,7 +88,7 @@ pub fn main() !void {
     defer state_ptr.chain.deinit(allocator);
 
     read_blockheaders_from_disk: {
-        const blockheaders_file = openAppFile(allocator, blockheaders_filename) catch |err| switch(err) {
+        const blockheaders_file = openAppFile(allocator, blockheaders_filename, false) catch |err| switch(err) {
             error.FileNotFound => {
                 std.log.warn("could not find existing {s}", .{blockheaders_filename});
                 break :read_blockheaders_from_disk;
@@ -97,29 +97,11 @@ pub fn main() !void {
         };
         defer blockheaders_file.close();
 
-        const blockheaders_file_size = (try blockheaders_file.stat()).size;
-        const bockheaders_file_valid = blockheaders_file_size != 0 and blockheaders_file_size % @sizeOf(Bitcoin.Block) == 0;
-
-        if (!bockheaders_file_valid) {
-            std.log.err("The {s} file is corrupt... fix or delete it before proceeding", .{blockheaders_filename});
-            break :read_blockheaders_from_disk;
-        }
-
-        const blockheaders_count = blockheaders_file_size / @sizeOf(Bitcoin.Block);
-        for (state_ptr.chain.block_headers[1..][0..blockheaders_count], 0..) |*block, i| {
-            var block_buffer: [@sizeOf(Bitcoin.Block)]u8 = undefined;
-            _ = blockheaders_file.read(&block_buffer) catch |err| {
-                std.log.err("failed to read block {d} in {s}: {t}", .{ i, blockheaders_filename, err });
-                break :read_blockheaders_from_disk;
-            };
-            for (std.mem.asBytes(block), std.mem.asBytes(&block_buffer)) |*out, read|
-                out.* = read;
-        }
-        state_ptr.chain.block_headers_count = @intCast(blockheaders_count + 1);
-        state_ptr.chain.latest_block_header = blk: {
-            var buf: [32]u8 = undefined;
-            state_ptr.chain.block_headers[state_ptr.chain.block_headers_count - 1].hash(&buf);
-            break :blk std.mem.readInt(u256, &buf, .big);
+        var buf: [@sizeOf(Bitcoin.Block)]u8 = undefined;
+        var reader = blockheaders_file.reader(&buf);
+        state_ptr.chain.parse(&reader.interface) catch {
+            std.log.err("The {s} file is corrupt (or from previous ZiglyNode versions)... fix or delete it before proceeding", .{blockheaders_filename});
+            return error.BlockheadersFileCorrupt;
         };
     }
 
@@ -213,7 +195,7 @@ pub fn main() !void {
                 try stdout.print("1. disconnect from peer\n", .{});
                 try stdout.print("2. ask for block headers\n", .{});
                 try stdout.print("3. ask for new peers and connect \n", .{});
-                try stdout.print("4. ask for all block headers (takes time)\n", .{});
+                try stdout.print("4. ask for many block headers\n", .{});
                 const action = try stdin.takeDelimiterExclusive('\n');
                 std.debug.assert(try stdin.discardShort(1) == 1);
                 switch (action[0]) {
@@ -241,7 +223,8 @@ pub fn main() !void {
                         for (pool.threads) |thr| thr.detach();
                     },
                     '4' => {
-                        requests: while (true) {
+                        var requests_count = try Prompt.promptInt(u32, "Type how many requests for new headers to make (2000 blocks/request)", stdout, stdin, .{});
+                        requests: while (requests_count > 0) : (requests_count -= 1) {
                             const result = requestBlocks(state_ptr, connection_ptr, allocator, stdout);
                             if (result) |block_count| {
                                 try stdout.print("Total blocks: {d:0>7}\n", .{state_ptr.chain.block_headers_count});
@@ -267,33 +250,19 @@ pub fn main() !void {
 
     std.log.info("saving data on disk...", .{});
 
-    save_blockheaders_to_disk: {
-        const appdata_dir = try std.fs.getAppDataDir(allocator, app_name);
-        defer allocator.free(appdata_dir);
-        std.fs.makeDirAbsolute(appdata_dir) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
-        };
-
-        const blockheaders_file_path = try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ appdata_dir, std.fs.path.sep, blockheaders_filename });
-        defer allocator.free(blockheaders_file_path);
-
-        const blockheaders_file = std.fs.createFileAbsolute(blockheaders_file_path, .{}) catch |err| {
+    write_blockheaders_to_disk: {
+        const blockheaders_file = openAppFile(allocator, blockheaders_filename, true) catch |err| {
             std.log.err("could not create {s}: {t}", .{ blockheaders_filename, err });
-            break :save_blockheaders_to_disk;
+            break :write_blockheaders_to_disk;
         };
         defer blockheaders_file.close();
 
-        // Save blocks excluding genesis block (starting from index 1)
-        if (state_ptr.chain.block_headers_count > 1) {
-            for (state_ptr.chain.block_headers[1..state_ptr.chain.block_headers_count]) |block| {
-                const block_bytes = std.mem.asBytes(&block);
-                _ = blockheaders_file.write(block_bytes) catch |err| {
-                    std.log.err("failed to write block to {s}: {t}", .{ blockheaders_file_path, err });
-                    break :save_blockheaders_to_disk;
-                };
-            }
-        }
+        var buf: [@sizeOf(Bitcoin.Block)]u8 = undefined;
+        var writer = blockheaders_file.writer(&buf);
+        state_ptr.chain.serialize(&writer.interface) catch |err| {
+            std.log.err("failed to write blocks to {s}: {t}", .{ blockheaders_filename, err });
+            break :write_blockheaders_to_disk;
+        };
     }
 }
 
@@ -503,7 +472,8 @@ fn requestNewPeers(state: *State, connection: *const Network.Node.Connection, al
 }
 
 const OpenAppFileError = std.fs.File.OpenError || std.fs.GetAppDataDirError;
-fn openAppFile(gpa: std.mem.Allocator, filename: []const u8) OpenAppFileError!std.fs.File {
+/// Caller is reponsible for calling `.close()` on file returned
+fn openAppFile(gpa: std.mem.Allocator, filename: []const u8, comptime override_existing: bool) OpenAppFileError!std.fs.File {
     const appdata_dir = try std.fs.getAppDataDir(gpa, app_name);
     defer gpa.free(appdata_dir);
     std.fs.makeDirAbsolute(appdata_dir) catch |err| switch (err) {
@@ -514,6 +484,10 @@ fn openAppFile(gpa: std.mem.Allocator, filename: []const u8) OpenAppFileError!st
     const filepath = try std.fmt.allocPrint(gpa, "{s}{c}{s}", .{ appdata_dir, std.fs.path.sep, filename });
     defer gpa.free(filepath);
 
-    std.log.info("loading {s}", .{filepath});
-    return std.fs.openFileAbsolute(filepath, .{});
+    std.log.info("accessing {s}...", .{filepath});
+    if (override_existing) {
+        return try std.fs.createFileAbsolute(filepath, .{});
+    } else {
+        return std.fs.openFileAbsolute(filepath, .{});
+    }
 }

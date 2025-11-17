@@ -54,7 +54,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
 
     const files = [_][]const u8{
-        "src/cursor.zig",
+        "src/util.zig",
         "src/elliptic-curve.zig",
         "src/cryptography.zig",
         "src/bitcoin.zig",

@@ -156,10 +156,11 @@ info: saving data on disk...
   - [x] Concurrent connect calls
   - [ ] Consume next address immediately after a connection fails (not sure)
 - [x] Check difficulty when receiving block headers
+- [x] Headers IBD
+- [ ] SPV
 - [ ] P2SH
 - [ ] SegWit
-- [ ] Continous requests (enter synchronization mode)
-- [ ] SPV
+- [ ] Full IBD with sparse pruning?
 
 Issues:
 - [ ] We can't seem to receive blocks from `/Satoshi:25.1.0/`

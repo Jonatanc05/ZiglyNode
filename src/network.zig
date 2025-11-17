@@ -3,9 +3,9 @@ const net = std.net;
 const assert = std.debug.assert;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const is_windows = @import("builtin").os.tag == .windows;
+const takeMyVarInt = @import("util.zig").takeMyVarInt;
 
 // managed dependencies
-const Cursor = @import("cursor.zig").Cursor;
 const Bitcoin = @import("bitcoin.zig");
 
 fn ipv4_as_ipv6(ipv4: [4]u8) [16]u8 {
@@ -46,20 +46,16 @@ pub const Protocol = struct {
                 }
             }
 
-            pub fn parse(data: []const u8, alloc: std.mem.Allocator) anyerror!ParseResult {
-                var cursor = Cursor.init(data);
-                var res = ParseResult{
-                    .value = .{ .addr = undefined },
-                    .bytes_read_count = 0,
-                };
+            pub fn parse(reader: *std.Io.Reader, alloc: std.mem.Allocator) anyerror!Message {
+                var res: Message = .{ .addr = undefined };
 
-                res.value.addr.count = cursor.readVarint();
-                res.value.addr.addr_array = try alloc.alloc(Protocol.Addr, @intCast(res.value.addr.count));
-                for (res.value.addr.addr_array) |*addr| {
-                    addr.time = cursor.readInt(u32, .little);
-                    addr.services = cursor.readInt(u64, .little);
-                    cursor.readBytes(&addr.ip);
-                    addr.port = cursor.readInt(u16, .big);
+                res.addr.count = try takeMyVarInt(reader, .little);
+                res.addr.addr_array = try alloc.alloc(Protocol.Addr, @intCast(res.addr.count));
+                for (res.addr.addr_array) |*addr| {
+                    addr.time = try reader.takeInt(u32, .little);
+                    addr.services = try reader.takeInt(u64, .little);
+                    addr.ip = (try reader.takeArray(16)).*;
+                    addr.port = try reader.takeInt(u16, .big);
                 }
 
                 return res;
@@ -84,28 +80,16 @@ pub const Protocol = struct {
                 try writer.writeInt(u256, self.hash_final_block, .little);
             }
 
-            pub fn parse(data: []const u8, unused: std.mem.Allocator) anyerror!ParseResult {
+            pub fn parse(reader: *std.Io.Reader, unused: std.mem.Allocator) anyerror!Message {
                 _ = unused;
-                var cursor = Cursor.init(data);
-                var res = ParseResult{
-                    .value = .{ .getheaders = undefined },
-                    .bytes_read_count = 0,
-                };
+                var result = Message{ .getheaders = undefined };
 
-                res.value.getheaders.version = cursor.readInt(i32, .little);
-                res.bytes_read_count += 4;
+                result.getheaders.version = try reader.takeInt(i32, .little);
+                result.getheaders.hash_count = try takeMyVarInt(reader, .little);
+                result.getheaders.hash_start_block = try reader.takeInt(u256, .little);
+                result.getheaders.hash_final_block = try reader.takeInt(u256, .little);
 
-                const starting_index = cursor.index;
-                res.value.getheaders.hash_count = cursor.readVarint();
-                res.bytes_read_count += @intCast(cursor.index - starting_index);
-
-                res.value.getheaders.hash_start_block = cursor.readInt(u256, .little);
-                res.bytes_read_count += 32;
-
-                res.value.getheaders.hash_final_block = cursor.readInt(u256, .little);
-                res.bytes_read_count += 32;
-
-                return res;
+                return result;
             }
         },
         headers: struct {
@@ -122,22 +106,15 @@ pub const Protocol = struct {
                 }
             }
 
-            pub fn parse(data: []const u8, alloc: std.mem.Allocator) anyerror!ParseResult {
-                var cursor = Cursor.init(data);
-                const count = cursor.readVarint();
+            pub fn parse(reader: *std.Io.Reader, alloc: std.mem.Allocator) anyerror!Message {
+                const count = try takeMyVarInt(reader, .little);
                 const blocks = try alloc.alloc(Bitcoin.Block, count);
                 for (blocks) |*block| {
-                    var reader: std.Io.Reader = .fixed(cursor.data[cursor.index..][0..80]);
-                    block.* = Bitcoin.Block.parse(&reader);
-                    cursor.index += 80;
-                    std.debug.assert(cursor.readInt(u8, .little) == 0);
+                    block.* = Bitcoin.Block.parse(reader);
+                    std.debug.assert(try reader.takeInt(u8, .little) == 0);
                 }
-                const total_read: u32 = @intCast(cursor.index);
 
-                return .{
-                    .value = .{ .headers = .{ .data = blocks } },
-                    .bytes_read_count = total_read,
-                };
+                return .{ .headers = .{ .data = blocks } };
             }
         },
         ping: struct {
@@ -147,20 +124,13 @@ pub const Protocol = struct {
                 try writer.writeInt(u64, self.nonce, .little);
             }
 
-            pub fn parse(data: []const u8, unused: std.mem.Allocator) anyerror!ParseResult {
+            pub fn parse(reader: *std.Io.Reader, unused: std.mem.Allocator) anyerror!Message {
                 _ = unused;
-                var cursor = Cursor.init(data);
-
-                var res = ParseResult{
-                    .value = Message{ .ping = .{ .nonce = undefined } },
-                    .bytes_read_count = 0,
+                return Message{
+                    .ping = .{
+                        .nonce = try reader.takeInt(u64, .little)
+                    },
                 };
-
-                const nonce = cursor.readInt(u64, .little);
-                res.value.ping.nonce = nonce;
-                res.bytes_read_count += 8;
-
-                return res;
             }
         },
         pong: struct {
@@ -170,19 +140,13 @@ pub const Protocol = struct {
                 try writer.writeInt(u64, self.nonce, .little);
             }
 
-            pub fn parse(data: []const u8, unused: std.mem.Allocator) anyerror!ParseResult {
+            pub fn parse(reader: *std.Io.Reader, unused: std.mem.Allocator) anyerror!Message {
                 _ = unused;
-                var cursor = Cursor.init(data);
-                var res = ParseResult{
-                    .value = Message{ .pong = .{ .nonce = undefined } },
-                    .bytes_read_count = 0,
+                return Message{
+                    .pong = .{
+                        .nonce = try reader.takeInt(u64, .little)
+                    },
                 };
-
-                const nonce = cursor.readInt(u64, .little);
-                res.value.pong.nonce = nonce;
-                res.bytes_read_count += 8;
-
-                return res;
             }
         },
         verack: NoPayloadMessage("verack"),
@@ -224,60 +188,27 @@ pub const Protocol = struct {
                 try writer.writeInt(u8, if (self.relay) 1 else 0, .big);
             }
 
-            pub fn parse(data: []const u8, alloc: std.mem.Allocator) anyerror!ParseResult {
-                var cursor = Cursor.init(data);
-                var res = ParseResult{
-                    .value = Message{ .version = .{ .timestamp = 0, .user_agent = undefined } },
-                    .bytes_read_count = 0,
+            pub fn parse(reader: *std.Io.Reader, alloc: std.mem.Allocator) anyerror!Message {
+                var result = Message{ .version = undefined };
+
+                result.version.version = try reader.takeInt(i32, .little);
+                result.version.services = try reader.takeInt(u64, .little);
+                result.version.timestamp = try reader.takeInt(i64, .little);
+                result.version.receiver_services = try reader.takeInt(u64, .little);
+                result.version.receiver_ip = (try reader.takeArray(16)).*;
+                result.version.receiver_port = try reader.takeInt(u16, .little);
+                result.version.sender_services = try reader.takeInt(u64, .little);
+                result.version.sender_ip = (try reader.takeArray(16)).*;
+                result.version.sender_port = try reader.takeInt(u16, .little);
+                result.version.nonce = try reader.takeInt(u64, .little);
+                result.version.user_agent = blk: {
+                    const user_agent_len = try reader.takeInt(u8, .little);
+                    const user_agent_ptr = try reader.take(user_agent_len);
+                    break :blk try alloc.dupe(u8, user_agent_ptr);
                 };
-
-                var out = &res.value.version;
-
-                out.version = cursor.readInt(i32, .little);
-                res.bytes_read_count += 4;
-                out.services = cursor.readInt(u64, .little);
-                out.timestamp = cursor.readInt(i64, .little);
-                res.bytes_read_count += 8 * 2;
-
-                out.receiver_services = cursor.readInt(u64, .little);
-                res.bytes_read_count += 8;
-
-                cursor.readBytes(&out.receiver_ip);
-                res.bytes_read_count += out.receiver_ip.len;
-
-                out.receiver_port = cursor.readInt(u16, .little);
-                res.bytes_read_count += 2;
-
-                out.sender_services = cursor.readInt(u64, .little);
-                res.bytes_read_count += 8;
-
-                cursor.readBytes(&out.sender_ip);
-                res.bytes_read_count += out.sender_ip.len;
-                out.sender_port = cursor.readInt(u16, .little);
-                res.bytes_read_count += 2;
-
-                out.nonce = cursor.readInt(u64, .little);
-                res.bytes_read_count += 8;
-
-                const user_agent_len = cursor.readInt(u8, .little);
-                res.bytes_read_count += 1;
-
-                var buffer: [256]u8 = undefined;
-                cursor.readBytes(buffer[0..user_agent_len]);
-                out.user_agent = try alloc.dupe(u8, buffer[0..user_agent_len]);
-                res.bytes_read_count += user_agent_len;
-
-                out.start_height = cursor.readInt(i32, .little);
-                res.bytes_read_count += 4;
-
-                if (out.version >= 70001) {
-                    out.relay = (cursor.readInt(u8, .little)) > 0;
-                    res.bytes_read_count += 1;
-                } else {
-                    out.relay = false;
-                }
-
-                return res;
+                result.version.start_height = try reader.takeInt(i32, .little);
+                result.version.relay = result.version.version > 70001 and (try reader.takeInt(u8, .little)) > 0;
+                return result;
             }
 
             pub fn deinit(self: @This(), alloc: std.mem.Allocator) void {
@@ -293,6 +224,7 @@ pub const Protocol = struct {
                 is_mandatory: bool,
                 name: []const u8,
                 return_type: type,
+                /// A void type in the list means "don't type check it"
                 params: []const type,
             };
             const expected_functions = .{
@@ -305,8 +237,8 @@ pub const Protocol = struct {
                 ExpectedFunction{
                     .is_mandatory = true,
                     .name = "parse",
-                    .return_type = anyerror!Protocol.Message.ParseResult,
-                    .params = &[_]type{ []const u8, std.mem.Allocator },
+                    .return_type = anyerror!Protocol.Message,
+                    .params = &[_]type{ *std.Io.Reader, std.mem.Allocator },
                 },
                 ExpectedFunction{
                     .is_mandatory = false,
@@ -362,10 +294,10 @@ pub const Protocol = struct {
                     _ = writer;
                 }
 
-                pub fn parse(unused: []const u8, _unused: std.mem.Allocator) anyerror!ParseResult {
+                pub fn parse(unused: *std.Io.Reader, _unused: std.mem.Allocator) anyerror!Message {
                     _ = unused;
                     _ = _unused;
-                    return .{ .value = @unionInit(Message, tag_name, .{}), .bytes_read_count = 8 };
+                    return @unionInit(Message, tag_name, .{});
                 }
             };
         }
@@ -408,16 +340,7 @@ pub const Protocol = struct {
             return buffer[0 .. writer.end + payload_size];
         }
 
-        const ParseResult = struct { value: Message, bytes_read_count: u32 };
-
-        pub fn parse(bytes: []u8, alloc: std.mem.Allocator) !ParseResult {
-            var reader: std.Io.Reader = .fixed(bytes);
-            var res: ParseResult = .{
-                .value = undefined,
-                .bytes_read_count = 0,
-            };
-            defer res.bytes_read_count = @intCast(reader.seek);
-
+        pub fn parse(reader: *std.Io.Reader, alloc: std.mem.Allocator) !Message {
             const magic = try reader.takeInt(u32, .big);
             if (magic != magic_mainnet and magic != magic_testnet) // might try to assert the magic read and the current context in the future
                 return error.MagicNumberExpected;
@@ -428,7 +351,7 @@ pub const Protocol = struct {
 
             const checksum_read = try reader.takeArray(4);
 
-            const payload_slice = bytes[reader.seek..][0..payload_size];
+            const payload_slice = try reader.take(@intCast(payload_size));
             // checksum validation
             {
                 var hash: [32]u8 = undefined;
@@ -439,25 +362,25 @@ pub const Protocol = struct {
                     return error.ChecksumMismatch;
                 }
             }
+            var payload_reader: std.Io.Reader = .fixed(payload_slice);
 
             const first_zero_index: usize = for (command, 0..) |c, i| {
                 if (c == 0) break i;
             } else 12;
             const tag_name = command[0..first_zero_index];
             var supported_command = false;
+            var result: Message = undefined;
             inline for (@typeInfo(Message).@"union".fields) |field| {
                 if (std.mem.eql(u8, field.name, tag_name)) {
                     supported_command = true;
-                    const msg_parse_result = try field.type.parse(payload_slice, alloc);
-                    res.value = msg_parse_result.value;
-                    res.bytes_read_count += msg_parse_result.bytes_read_count;
+                    result = try field.type.parse(&payload_reader, alloc);
                 }
             }
 
             // shouldn't be an error condition but we want temporarily be sure we implented common commands
             if (!supported_command) return error.UnsupportedCommandReceived;
 
-            return res;
+            return result;
         }
 
         pub fn deinit(self: Message, alloc: std.mem.Allocator) void {
@@ -591,8 +514,9 @@ pub const Node = struct {
         for (received) |msg| {
             switch (msg) {
                 Protocol.Message.version => |v_msg| {
-                    if (v_msg.version < Protocol.current_version)
+                    if (v_msg.version < Protocol.current_version) {
                         return error.VersionMismatch;
+                    }
                     for (v_msg.user_agent, 0..) |ch, i| {
                         if (i >= user_agent_received.len) break;
                         user_agent_received[i] = ch;
@@ -660,13 +584,13 @@ pub const Node = struct {
         std.log.debug("Received message \"{s}\" with the following payload ({d} bytes):", .{ header_slice[4..16], payload_length });
         const debug_clip_index = 1000;
         if (payload_slice.len > debug_clip_index) {
-            std.log.debug("{s}... (+{x} bytes)", .{ payload_slice[0..debug_clip_index], payload_slice.len - debug_clip_index });
+            std.log.debug("{x}... (+{d} bytes)", .{ payload_slice[0..debug_clip_index], payload_slice.len - debug_clip_index });
         } else {
-            std.log.debug("{s}", .{payload_slice});
+            std.log.debug("{x}", .{payload_slice});
         }
 
-        const result = try Protocol.Message.parse(buffer[0..], alloc);
-        return result.value;
+        var parse_reader: std.Io.Reader = .fixed(&buffer);
+        return try Protocol.Message.parse(&parse_reader, alloc);
     }
 
     /// Should be only temporary, we might (probably should) have evented messages
@@ -715,7 +639,8 @@ test "protocol: message serialization" {
         res,
     );
 
-    const parsed_res = (try Protocol.Message.parse(res, t_alloc)).value;
+    var reader: std.Io.Reader = .fixed(&buffer);
+    const parsed_res = try Protocol.Message.parse(&reader, t_alloc);
     var buffer2 = [_]u8{0} ** 32;
     const serialized_parsed_res = try parsed_res.serialize(&buffer2);
 

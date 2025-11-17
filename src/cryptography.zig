@@ -4,7 +4,6 @@ const assert = std.debug.assert;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 // managed dependencies
-const Cursor = @import("cursor.zig").Cursor;
 const EllipticCurveLib = @import("elliptic-curve.zig");
 const FieldElement = EllipticCurveLib.FieldElement(u256);
 const CurvePoint = EllipticCurveLib.CurvePoint(u256);

@@ -3,6 +3,7 @@ const std = @import("std");
 const mem = std.mem;
 const assert = std.debug.assert;
 const Sha256 = std.crypto.hash.sha2.Sha256;
+const takeMyVarInt = @import("util.zig").takeMyVarInt;
 
 // not managed dependencies
 const c_ripemd = @cImport({
@@ -12,7 +13,6 @@ const c_ripemd = @cImport({
 // managed dependencies
 const EllipticCurveLib = @import("elliptic-curve.zig");
 const CryptLib = @import("cryptography.zig");
-const Cursor = @import("cursor.zig").Cursor;
 
 pub const Aux = struct {
     /// writes little endian
@@ -391,42 +391,42 @@ pub const Tx = struct {
     }
 
     pub fn parse(data: []const u8, alloc: mem.Allocator) !Tx {
-        var cursor = Cursor.init(data);
+        var reader: std.Io.Reader = .fixed(data);
         var tx: Tx = undefined;
         var is_witness = false;
 
-        tx.version = cursor.readInt(u32, .little);
+        tx.version = try reader.takeInt(u32, .little);
 
         tx.inputs = inputs: {
-            var n_inputs = cursor.readVarint();
+            var n_inputs = try takeMyVarInt(&reader, .little);
             if (n_inputs == 0) { // witness marker
                 is_witness = true;
-                assert(cursor.readInt(u8, .little) == 1); // witness flag
-                n_inputs = cursor.readVarint();
+                assert(try reader.takeInt(u8, .little) == 1); // witness flag
+                n_inputs = try takeMyVarInt(&reader, .little);
             }
             const inputs = try alloc.alloc(TxInput, n_inputs);
             for (inputs) |*input| {
-                input.txid = cursor.readInt(u256, .little);
-                input.index = cursor.readInt(u32, .little);
+                input.txid = try reader.takeInt(u256, .little);
+                input.index = try reader.takeInt(u32, .little);
                 input.script_sig = script_sig: {
-                    const script_sig = try alloc.alloc(u8, cursor.readVarint());
-                    cursor.readBytes(script_sig);
-                    break :script_sig script_sig;
+                    const script_sig_len = try takeMyVarInt(&reader, .little);
+                    const script_sig = try reader.take(@intCast(script_sig_len));
+                    break :script_sig try alloc.dupe(u8, script_sig);
                 };
-                input.sequence = cursor.readInt(u32, .little);
+                input.sequence = try reader.takeInt(u32, .little);
             }
             break :inputs inputs;
         };
 
         tx.outputs = outputs: {
-            const n_outputs = cursor.readVarint();
+            const n_outputs = try takeMyVarInt(&reader, .little);
             const outputs = try alloc.alloc(TxOutput, n_outputs);
             for (outputs) |*output| {
-                output.amount = cursor.readInt(u64, .little);
+                output.amount = try reader.takeInt(u64, .little);
                 output.script_pubkey = script_pubkey: {
-                    const script_pubkey = try alloc.alloc(u8, cursor.readVarint());
-                    cursor.readBytes(script_pubkey);
-                    break :script_pubkey script_pubkey;
+                    const script_pubkey_len = try takeMyVarInt(&reader, .little);
+                    const script_pubkey = try reader.take(script_pubkey_len);
+                    break :script_pubkey try alloc.dupe(u8, script_pubkey);
                 };
             }
             break :outputs outputs;
@@ -435,16 +435,18 @@ pub const Tx = struct {
         tx.witness = witness: {
             if (!is_witness) break :witness null;
 
-            const n_items = cursor.readVarint();
+            const n_items = try takeMyVarInt(&reader, .little);
             const temp_witness = try alloc.alloc([]u8, n_items);
             for (0..n_items) |i| {
-                temp_witness[i] = try alloc.alloc(u8, cursor.readVarint());
-                cursor.readBytes(temp_witness[i]);
+                const witness_read_len = try takeMyVarInt(&reader, .little);
+                const witness_read = try reader.take(witness_read_len);
+                temp_witness[i] = try alloc.alloc(u8, witness_read_len);
+                std.mem.copyForwards( u8, temp_witness[i], witness_read);
             }
             break :witness temp_witness;
         };
 
-        tx.locktime = cursor.readInt(u32, .little);
+        tx.locktime = try reader.takeInt(u32, .little);
 
         return tx;
     }
@@ -472,25 +474,25 @@ pub const Script = struct {
         data: []u8,
     };
 
-    pub fn parse(bytes: []const u8, alloc: mem.Allocator) !Script {
+    pub fn parse(reader: *std.Io.Reader, alloc: mem.Allocator) !Script {
         var instructions = try std.ArrayList(Instruction).initCapacity(alloc, 100);
         defer instructions.deinit(alloc);
 
-        var cursor = Cursor.init(bytes);
-        while (!cursor.ended()) {
-            const opcode = cursor.readInt(u8, .little);
+        while (reader.takeInt(u8, .little)) |opcode| {
             switch (opcode) {
                 0x01...0x4b => { // Data
                     try instructions.append(alloc, .{
-                        .data = try alloc.dupe(u8, bytes[cursor.index..][0..opcode]),
+                        .data = try alloc.dupe(u8, try reader.take(@intCast(opcode))),
                     });
-                    cursor.index += @intCast(opcode);
                 },
                 else => {
                     if (!Opcode.isSupported(opcode)) return error.OpcodeNotSupported;
                     try instructions.append(alloc, .{ .opcode = opcode });
                 },
             }
+        } else |err| switch(err) {
+            error.EndOfStream => {},
+            error.ReadFailed => unreachable,
         }
 
         return Script{
@@ -684,23 +686,29 @@ pub const Script = struct {
         VerifyFailed,
     };
     pub fn run(script: []const u8, stack: *Stack, transaction: ?*Tx, input_index: ?usize, alloc: mem.Allocator) RunError!void {
+        var script_reader: std.Io.Reader = .fixed(script);
         const Op = Opcode;
         const Local = struct {
             fn handlePopError(err: Stack.PopError) !void {
-                switch (err) {
-                    error.OutBufferTooSmall => return error.Internal,
-                    error.Corrupted, error.EmptyStack => return error.BadScript,
-                }
+                return switch (err) {
+                    error.OutBufferTooSmall => error.Internal,
+                    error.Corrupted, error.EmptyStack => error.BadScript,
+                };
+            }
+
+            fn handleReaderError(err: std.Io.Reader.Error) !void {
+                return switch (err) {
+                    error.ReadFailed => unreachable,
+                    error.EndOfStream => error.Internal,
+                };
             }
         };
 
-        var scriptReader = Cursor.init(script);
-        while (!scriptReader.ended()) {
-            const opcode = scriptReader.readInt(u8, .little);
+        while (script_reader.takeInt(u8, .little)) |opcode| {
             switch (opcode) {
                 0x01...0x4b => { // Data
-                    try stack.push(script[scriptReader.index..][0..opcode]);
-                    scriptReader.index += @intCast(opcode);
+                    const data = script_reader.take(@intCast(opcode)) catch |err| return Local.handleReaderError(err);
+                    try stack.push(data);
                 },
                 Op.OP_0 => {
                     try stack.push(&[_]u8{});
@@ -709,9 +717,9 @@ pub const Script = struct {
                     try stack.push(&[1]u8{opcode - 0x50});
                 },
                 Op.OP_PUSHDATA1 => {
-                    const size = scriptReader.readInt(u8, .little);
-                    try stack.push(script[scriptReader.index..][0..size]);
-                    scriptReader.index += @intCast(size);
+                    const size = script_reader.takeInt(u8, .little) catch |err| return Local.handleReaderError(err);
+                    const data = script_reader.take(@intCast(size)) catch |err| return Local.handleReaderError(err);
+                    try stack.push(data);
                 },
                 Op.OP_VERIFY => {
                     if (!stack.verify())
@@ -806,6 +814,9 @@ pub const Script = struct {
                     @panic(msg);
                 },
             }
+        } else |err| switch (err) {
+            error.EndOfStream => {},
+            error.ReadFailed => unreachable,
         }
     }
 
@@ -1042,7 +1053,8 @@ test "script: Opcode.isSupported" {
 test "script: Script parsing" {
     const Op = Script.Opcode;
     const script_bytes = [34]u8{ Op.OP_1, 0x20, 0xaa, 0xc3, 0x5f, 0xe9, 0x1f, 0x20, 0xd4, 0x88, 0x16, 0xb3, 0xc8, 0x30, 0x11, 0xd1, 0x17, 0xef, 0xa3, 0x5a, 0xcd, 0x24, 0x14, 0xd3, 0x6c, 0x1e, 0x02, 0xb0, 0xf2, 0x9f, 0xc3, 0x10, 0x6d, 0x90 };
-    const script = try Script.parse(script_bytes[0..], t_alloc);
+    var reader: std.Io.Reader = .fixed(&script_bytes);
+    const script = try Script.parse(&reader, t_alloc);
     defer script.deinit(t_alloc);
     try expect(script.instructions.len == 2);
     try expect(script.instructions[0].opcode == Op.OP_1);

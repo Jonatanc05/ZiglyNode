@@ -23,6 +23,8 @@ pub const State = struct {
     block_headers: []Bitcoin.Block,
     /// Includes genesis block on the count
     block_headers_count: u32,
+    // TODO
+    block_payloads_validated_count: u32,
 
     pub fn init(alloc: std.mem.Allocator) !State {
         var self: State = .{
@@ -34,6 +36,7 @@ pub const State = struct {
         self.latest_block_header = genesis_block_hash;
         self.block_headers[0] = genesis_block;
         self.block_headers_count = 1;
+        self.block_payloads_validated_count = 0;
 
         return self;
     }

@@ -3,7 +3,6 @@ const std = @import("std");
 const mem = std.mem;
 const assert = std.debug.assert;
 const Sha256 = std.crypto.hash.sha2.Sha256;
-const takeMyVarInt = @import("util.zig").takeMyVarInt;
 
 // not managed dependencies
 const c_ripemd = @cImport({
@@ -13,38 +12,7 @@ const c_ripemd = @cImport({
 // managed dependencies
 const EllipticCurveLib = @import("elliptic-curve.zig");
 const CryptLib = @import("cryptography.zig");
-
-pub const Aux = struct {
-    /// writes little endian
-    pub fn writeVarint(stream: *std.Io.Writer, value: u32) error{WriteFailed}!void {
-        switch (value) {
-            0...0xfc => {
-                try stream.writeInt(u8, @intCast(value), .little);
-            },
-            0xfd...0x0ffff => {
-                try stream.writeByte(0xfd);
-                try stream.writeInt(u16, @intCast(value), .little);
-            },
-            0x10000...0xffffff => {
-                try stream.writeByte(0xfe);
-                try stream.writeInt(u24, @intCast(value), .little);
-            },
-            else => {
-                try stream.writeByte(0xff);
-                try stream.writeInt(u32, @intCast(value), .little);
-            },
-        }
-    }
-
-    pub fn sizeAsVarint(value: u32) usize {
-        return switch (value) {
-            0...0xfc => 1,
-            0xfd...0x0ffff => 3,
-            0x10000...0xffffff => 4,
-            else => 5,
-        };
-    }
-};
+const Util = @import("util.zig");
 
 pub const Base58 = struct {
     const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
@@ -359,31 +327,31 @@ pub const Tx = struct {
             writer.writeByte(1) catch return mem.Allocator.Error.OutOfMemory;
         }
 
-        Aux.writeVarint(writer, @intCast(self.inputs.len)) catch return mem.Allocator.Error.OutOfMemory;
+        Util.writeMyVarInt(writer, @intCast(self.inputs.len), .little) catch return mem.Allocator.Error.OutOfMemory;
         for (self.inputs) |input| {
             writer.writeInt(u256, input.txid, .little) catch return mem.Allocator.Error.OutOfMemory;
             writer.writeInt(u32, input.index, .little) catch return mem.Allocator.Error.OutOfMemory;
-            Aux.writeVarint(writer, @intCast(input.script_sig.len)) catch return mem.Allocator.Error.OutOfMemory;
+            Util.writeMyVarInt(writer, @intCast(input.script_sig.len), .little) catch return mem.Allocator.Error.OutOfMemory;
             writer.writeAll(input.script_sig) catch return mem.Allocator.Error.OutOfMemory;
             writer.writeInt(u32, input.sequence, .little) catch return mem.Allocator.Error.OutOfMemory;
         }
 
-        Aux.writeVarint(writer, @intCast(self.outputs.len)) catch return mem.Allocator.Error.OutOfMemory;
+        Util.writeMyVarInt(writer, @intCast(self.outputs.len), .little) catch return mem.Allocator.Error.OutOfMemory;
         for (self.outputs) |output| {
             writer.writeInt(u64, output.amount, .little) catch return mem.Allocator.Error.OutOfMemory;
-            Aux.writeVarint(writer, @intCast(output.script_pubkey.len)) catch return mem.Allocator.Error.OutOfMemory;
+            Util.writeMyVarInt(writer, @intCast(output.script_pubkey.len), .little) catch return mem.Allocator.Error.OutOfMemory;
             writer.writeAll(output.script_pubkey) catch return mem.Allocator.Error.OutOfMemory;
         }
 
         if (self.witness) |witness| {
-            Aux.writeVarint(writer, @intCast(witness.len)) catch return mem.Allocator.Error.OutOfMemory;
+            Util.writeMyVarInt(writer, @intCast(witness.len), .little) catch return mem.Allocator.Error.OutOfMemory;
             for (witness) |item| {
-                Aux.writeVarint(writer, @intCast(item.len)) catch return mem.Allocator.Error.OutOfMemory;
+                Util.writeMyVarInt(writer, @intCast(item.len), .little) catch return mem.Allocator.Error.OutOfMemory;
                 writer.writeAll(item) catch return mem.Allocator.Error.OutOfMemory;
             }
         } else {
             // A guy (MrRGnome) told me non-segwit transactions also have witness???
-            //Aux.writeVarint(writer, 0) catch return mem.Allocator.Error.OutOfMemory;
+            //Util.writeVarint(writer, 0) catch return mem.Allocator.Error.OutOfMemory;
         }
 
         writer.writeInt(u32, self.locktime, .little) catch return mem.Allocator.Error.OutOfMemory;
@@ -398,18 +366,18 @@ pub const Tx = struct {
         tx.version = try reader.takeInt(u32, .little);
 
         tx.inputs = inputs: {
-            var n_inputs = try takeMyVarInt(&reader, .little);
+            var n_inputs = try Util.takeMyVarInt(&reader, .little);
             if (n_inputs == 0) { // witness marker
                 is_witness = true;
                 assert(try reader.takeInt(u8, .little) == 1); // witness flag
-                n_inputs = try takeMyVarInt(&reader, .little);
+                n_inputs = try Util.takeMyVarInt(&reader, .little);
             }
             const inputs = try alloc.alloc(TxInput, n_inputs);
             for (inputs) |*input| {
                 input.txid = try reader.takeInt(u256, .little);
                 input.index = try reader.takeInt(u32, .little);
                 input.script_sig = script_sig: {
-                    const script_sig_len = try takeMyVarInt(&reader, .little);
+                    const script_sig_len = try Util.takeMyVarInt(&reader, .little);
                     const script_sig = try reader.take(@intCast(script_sig_len));
                     break :script_sig try alloc.dupe(u8, script_sig);
                 };
@@ -419,12 +387,12 @@ pub const Tx = struct {
         };
 
         tx.outputs = outputs: {
-            const n_outputs = try takeMyVarInt(&reader, .little);
+            const n_outputs = try Util.takeMyVarInt(&reader, .little);
             const outputs = try alloc.alloc(TxOutput, n_outputs);
             for (outputs) |*output| {
                 output.amount = try reader.takeInt(u64, .little);
                 output.script_pubkey = script_pubkey: {
-                    const script_pubkey_len = try takeMyVarInt(&reader, .little);
+                    const script_pubkey_len = try Util.takeMyVarInt(&reader, .little);
                     const script_pubkey = try reader.take(script_pubkey_len);
                     break :script_pubkey try alloc.dupe(u8, script_pubkey);
                 };
@@ -435,10 +403,10 @@ pub const Tx = struct {
         tx.witness = witness: {
             if (!is_witness) break :witness null;
 
-            const n_items = try takeMyVarInt(&reader, .little);
+            const n_items = try Util.takeMyVarInt(&reader, .little);
             const temp_witness = try alloc.alloc([]u8, n_items);
             for (0..n_items) |i| {
-                const witness_read_len = try takeMyVarInt(&reader, .little);
+                const witness_read_len = try Util.takeMyVarInt(&reader, .little);
                 const witness_read = try reader.take(witness_read_len);
                 temp_witness[i] = try alloc.alloc(u8, witness_read_len);
                 std.mem.copyForwards( u8, temp_witness[i], witness_read);

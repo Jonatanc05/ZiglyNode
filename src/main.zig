@@ -116,9 +116,16 @@ pub fn main() !void {
         try stdout.print("\nHello dear hodler, tell me what can I do for you\n", .{});
         try stdout.print("1. View blockchain state\n", .{});
         try stdout.print("2. Connect to a new peer\n", .{});
-        try stdout.print("3. List peers (interact)\n", .{});
+        try stdout.print("3. List peers ({d})\n", .{active_connection_count: {
+            var count: u32 = 0;
+            for (state_ptr.connections) |c| {
+                count += if (c.alive) 1 else 0;
+            }
+            break :active_connection_count count;
+        }});
         try stdout.print("4. Sign a transaction\n", .{});
         try stdout.print("5. Exit\n\n", .{});
+        try stdout.print("NOTE: Type \"i <N>\" to interact with peer number N", .{});
 
         const input = try stdin.takeDelimiterExclusive('\n');
         std.debug.assert(try stdin.discardShort(1) == 1);
@@ -130,7 +137,7 @@ pub fn main() !void {
                 try stdout.print("Block headers count: {d}\n", .{state_ptr.chain.block_headers_count});
 
                 if (state_ptr.chain.block_headers_count > 1)
-                    try stdout.print("Latest block hash: {x:0>64}\n", .{state_ptr.chain.latest_block_header});
+                    try stdout.print("Latest block header: {x:0>64}\n", .{state_ptr.chain.latest_block_header});
                 try stdout.print("========================\n", .{});
             },
             '2' => {
@@ -193,9 +200,10 @@ pub fn main() !void {
                 const connection_ptr = &state_ptr.connections[peer_id].data;
                 try stdout.print("\nWhat do you want to do?\n", .{});
                 try stdout.print("1. disconnect from peer\n", .{});
-                try stdout.print("2. ask for block headers\n", .{});
-                try stdout.print("3. ask for new peers and connect \n", .{});
+                try stdout.print("2. ask for new peers and connect \n", .{});
+                try stdout.print("3. ask for block headers\n", .{});
                 try stdout.print("4. ask for many block headers\n", .{});
+                try stdout.print("5. ask for entire blocks\n", .{});
                 const action = try stdin.takeDelimiterExclusive('\n');
                 std.debug.assert(try stdin.discardShort(1) == 1);
                 switch (action[0]) {
@@ -204,14 +212,6 @@ pub fn main() !void {
                         state_ptr.active_connections -= 1;
                     },
                     '2' => {
-                        const result = requestBlocks(state_ptr, connection_ptr, allocator, stdout);
-                        if (result) |block_count| {
-                            try stdout.print("{d} new blocks received!\n", .{block_count});
-                        } else |err| {
-                            try stdout.print("Could not request blocks: {t}", .{err});
-                        }
-                    },
-                    '3' => {
                         var buffer: [max_concurrent_tasks * 105]u8 = undefined; // 105 is empirical and might change
                         var buffer_alloc = std.heap.FixedBufferAllocator.init(&buffer);
                         var pool: Thread.Pool = undefined;
@@ -221,6 +221,14 @@ pub fn main() !void {
                         };
                         while (pool.run_queue.popFirst() != null) {}
                         for (pool.threads) |thr| thr.detach();
+                    },
+                    '3' => {
+                        const result = requestBlocks(state_ptr, connection_ptr, allocator, stdout);
+                        if (result) |block_count| {
+                            try stdout.print("{d} new blocks received!\n", .{block_count});
+                        } else |err| {
+                            try stdout.print("Could not request blocks: {t}", .{err});
+                        }
                     },
                     '4' => {
                         var requests_count = try Prompt.promptInt(u32, "Type how many requests for new headers to make (2000 blocks/request)", stdout, stdin, .{});

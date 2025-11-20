@@ -7,6 +7,7 @@ const takeMyVarInt = @import("util.zig").takeMyVarInt;
 
 // managed dependencies
 const Bitcoin = @import("bitcoin.zig");
+const Util = @import("util.zig");
 
 fn ipv4_as_ipv6(ipv4: [4]u8) [16]u8 {
     return [1]u8{0} ** 10 ++ [2]u8{ 0xff, 0xff } ++ ipv4;
@@ -37,7 +38,7 @@ pub const Protocol = struct {
             addr_array: []Addr,
 
             pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
-                try Bitcoin.Aux.writeVarint(writer, self.count);
+                try Util.writeMyVarInt(writer, self.count, .little);
                 for (self.addr_array) |addr| {
                     try writer.writeInt(u32, addr.time, .little);
                     try writer.writeInt(u64, addr.services, .little);
@@ -66,6 +67,35 @@ pub const Protocol = struct {
             }
         },
         getaddr: NoPayloadMessage("getaddr"),
+        // TODO: block locator hashes to detect if we are on an invalid (shorter) chain
+        getblocks: struct {
+            version: u32 = current_version,
+            /// VarInt on wire
+            hash_count: u32,
+            /// Currently only one hash
+            block_locator: u256,
+            hash_stop: u256,
+
+            pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
+                try writer.writeInt(i32, self.version, .little);
+                try Util.writeMyVarInt(writer, self.hash_count, .little);
+                try writer.writeInt(u256, self.block_locator, .little);
+                try writer.writeInt(u256, self.hash_stop, .little);
+            }
+
+            pub fn parse(reader: *std.Io.Reader, unused: std.mem.Allocator) anyerror!Message {
+                _ = unused;
+                var result = Message{ .getblocks = undefined };
+
+                result.getblocks.version = try reader.takeInt(i32, .little);
+                result.getblocks.hash_count = try takeMyVarInt(reader, .little);
+                result.getblocks.block_locator = try reader.takeInt(u256, .little);
+                result.getblocks.hash_stop = try reader.takeInt(u256, .little);
+
+                return result;
+            }
+
+        },
         getheaders: struct {
             version: i32 = current_version,
             hash_count: u32,
@@ -75,7 +105,7 @@ pub const Protocol = struct {
 
             pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
                 try writer.writeInt(i32, self.version, .little);
-                try Bitcoin.Aux.writeVarint(writer, self.hash_count);
+                try Util.writeMyVarInt(writer, self.hash_count, .little);
                 try writer.writeInt(u256, self.hash_start_block, .little);
                 try writer.writeInt(u256, self.hash_final_block, .little);
             }
@@ -96,7 +126,7 @@ pub const Protocol = struct {
             data: []Bitcoin.Block,
 
             pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
-                try Bitcoin.Aux.writeVarint(writer, @intCast(self.data.len));
+                try Util.writeMyVarInt(writer, @intCast(self.data.len), .little);
                 for (self.data) |block| {
                     var buffer: [80]u8 = undefined;
                     var bwriter: std.Io.Writer = .fixed(&buffer);
@@ -115,6 +145,47 @@ pub const Protocol = struct {
                 }
 
                 return .{ .headers = .{ .data = blocks } };
+            }
+        },
+        inv: struct {
+            /// VarInt on wire
+            count: u32,
+            inventory: InvItem,
+
+            const InvItem = []struct {
+                @"type": InvItemType,
+                hash: u256,
+            };
+            const InvItemType = enum(u32) {
+                /// Any data received along with this value may be ignored
+                @"ERROR" = 0,
+                MSG_TX = 1,
+                MSG_BLOCK = 2,
+                /// Indicates the reply should be a merkleblock message rather than a block message (when using bloom filter: BIP37)
+                MSG_FILTERED_BLOCK = 3,
+                MSG_CMPCT_BLOCK = 4, // BIP 152
+                MSG_WITNESS_TX = 0x40000001,
+                MSG_WITNESS_BLOCK = 0x40000002,
+                MSG_FILTERED_WITNESS_BLOCK = 0x40000003,
+            };
+
+            pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
+                try writer.writeInt(u32, self.count, .little);
+                for (self.inventory) |inv_item| {
+                    try writer.writeInt(u32, @intFromEnum(inv_item.@"type"), .little);
+                    try writer.writeInt(u256, inv_item.hash, .little);
+                }
+            }
+
+            pub fn parse(reader: *std.Io.Reader, alloc: std.mem.Allocator) anyerror!Message {
+                var result = Message{ .inv = undefined };
+                result.inv.count = try reader.takeInt(u32, .little);
+                result.inv.inventory = try alloc.alloc(InvItem, @intCast(result.count));
+
+                for (&result.inv.inventory) |*inv_item| {
+                    inv_item.@"type" = @enumFromInt(try reader.takeInt(u32, .little));
+                    inv_item.hash = try reader.takeInt(u256, .little);
+                }
             }
         },
         ping: struct {
@@ -593,7 +664,7 @@ pub const Node = struct {
         return try Protocol.Message.parse(&parse_reader, alloc);
     }
 
-    /// Should be only temporary, we might (probably should) have evented messages
+    /// We might have evented messages
     pub fn readUntilMessage(connection: *const Connection, comptime tag: @typeInfo(Protocol.Message).@"union".tag_type.?, alloc: std.mem.Allocator) !Protocol.Message {
         while (true) {
             if (readMessage(connection, alloc)) |msg| {

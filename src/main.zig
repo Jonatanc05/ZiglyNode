@@ -112,20 +112,27 @@ pub fn main() !void {
 
     try stdout.print("\nYour address is {s}\n", .{state_ptr.address});
     while (true) {
+        try prepareOutput(stdout);
         try stdout.print("\n################################################\n", .{});
-        try stdout.print("\nHello dear hodler, tell me what can I do for you\n", .{});
-        try stdout.print("1. View blockchain state\n", .{});
-        try stdout.print("2. Connect to a new peer\n", .{});
-        try stdout.print("3. List peers ({d})\n", .{active_connection_count: {
-            var count: u32 = 0;
-            for (state_ptr.connections) |c| {
-                count += if (c.alive) 1 else 0;
+        try stdout.print("#                                              #\n", .{});
+        try stdout.print("# Hello dear hodler, tell me what to do        #\n", .{});
+        try stdout.print("#   1. View blockchain state                   #\n", .{});
+        try stdout.print("#   2. Connect to a new peer                   #\n", .{});
+        try stdout.print("#   3. List peers ({d})                          #\n",
+            .{ active_connections_count: {
+                var count: u32 = 0;
+                for (state_ptr.connections) |c| {
+                    count += if (c.alive) 1 else 0;
+                }
+                break :active_connections_count count;
             }
-            break :active_connection_count count;
-        }});
-        try stdout.print("4. Sign a transaction\n", .{});
-        try stdout.print("5. Exit\n\n", .{});
-        try stdout.print("NOTE: Type \"i <N>\" to interact with peer number N", .{});
+        });
+        try stdout.print("#   4. Sign a transaction                      #\n", .{});
+        try stdout.print("#   5. Exit                                    #\n", .{});
+        try stdout.print("#                                              #\n", .{});
+        try stdout.print("# NOTE: Type \"i <N>\" to interact with peer     #\n", .{});
+        try stdout.print("# number N                                     #\n", .{});
+        try stdout.print("################################################\n", .{});
 
         const input = try stdin.takeDelimiterExclusive('\n');
         std.debug.assert(try stdin.discardShort(1) == 1);
@@ -133,6 +140,7 @@ pub fn main() !void {
         const b = input[0];
         outerswitch: switch (b) {
             '1' => {
+                try prepareOutput(stdout);
                 try stdout.print("\n=== Blockchain State ===\n", .{});
                 try stdout.print("Block headers count: {d}\n", .{state_ptr.chain.block_headers_count});
 
@@ -149,6 +157,7 @@ pub fn main() !void {
                 };
 
                 const target_ip_address = try Prompt.promptIpAddress(stdout, stdin, .{ .default_value = "127.0.0.1" });
+                try prepareOutput(stdout);
 
                 state_ptr.connections[new_peer_id].data = Network.Node.connect(target_ip_address, app_name, allocator, connection_timeout_seconds) catch |err| {
                     std.log.err("Failed to connect to {f}: {t}", .{ target_ip_address, err });
@@ -163,6 +172,7 @@ pub fn main() !void {
                 });
             },
             '3' => {
+                try prepareOutput(stdout);
                 try stdout.print("======== Peer list ========\n", .{});
                 for (state_ptr.connections, 0..) |conn, i| {
                     if (conn.alive)
@@ -246,6 +256,20 @@ pub fn main() !void {
                             }
                         }
                     },
+                    '5' => {
+                        try Network.Node.sendMessage(connection_ptr,
+                            Network.Protocol.Message{
+                                .getblocks = .{
+                                    .hash_count = 1,
+                                    .block_locator = Blockchain.genesis_block_hash,
+                                    //.hash_stop = 0,
+                                    .hash_stop = 0x00000000839a8e6886ab5951d76f411475428afc90947ee320161bbf18eb6048,
+                                }
+                            }
+                        );
+                        const msg = try Network.Node.readUntilMessage(connection_ptr, Network.Protocol.Message.headers, allocator);
+                        std.debug.print("inv msg: {any}\n", .{msg});
+                    },
                     else => continue,
                 }
             },
@@ -271,6 +295,16 @@ pub fn main() !void {
             std.log.err("failed to write blocks to {s}: {t}", .{ blockheaders_filename, err });
             break :write_blockheaders_to_disk;
         };
+    }
+}
+
+fn prepareOutput(stdout: ?*std.Io.Writer) !void {
+    if (stdout) |out| {
+        try out.print("\n\n\n\n\n\n\n\n\n\n", .{});
+    } else {
+        var stdout_writer = std.fs.File.stdout().writer(&.{});
+        const out = &stdout_writer.interface;
+        try out.print("\n\n\n\n\n\n\n\n\n\n", .{});
     }
 }
 
@@ -476,6 +510,7 @@ fn requestNewPeers(state: *State, connection: *const Network.Node.Connection, al
     Thread.sleep(500_000_000);
     for (0..num_tasks) |_| semaphore.wait();
 
+    try prepareOutput(null);
     std.log.info("Connected to {d} new peers\n", .{new_connections_count});
 }
 

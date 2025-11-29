@@ -17,6 +17,7 @@ fn u32ipv4_as_ipv6(ipv4: u32) [16]u8 {
     return ipv4_as_ipv6(ipv4_bytes);
 }
 
+/// Low level protocol implementation
 pub const Protocol = struct {
     pub const current_version = 60002;
 
@@ -69,11 +70,12 @@ pub const Protocol = struct {
         getaddr: NoPayloadMessage("getaddr"),
         // TODO: block locator hashes to detect if we are on an invalid (shorter) chain
         getblocks: struct {
-            version: u32 = current_version,
+            version: i32 = current_version,
             /// VarInt on wire
             hash_count: u32,
-            /// Currently only one hash
+            /// Currently only one hash (hash_count must be 1)
             block_locator: u256,
+            /// Set 0 to get as many as possible
             hash_stop: u256,
 
             pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
@@ -94,7 +96,6 @@ pub const Protocol = struct {
 
                 return result;
             }
-
         },
         getheaders: struct {
             version: i32 = current_version,
@@ -150,9 +151,9 @@ pub const Protocol = struct {
         inv: struct {
             /// VarInt on wire
             count: u32,
-            inventory: InvItem,
+            inventory: []InvItem,
 
-            const InvItem = []struct {
+            const InvItem = struct {
                 @"type": InvItemType,
                 hash: u256,
             };
@@ -180,12 +181,13 @@ pub const Protocol = struct {
             pub fn parse(reader: *std.Io.Reader, alloc: std.mem.Allocator) anyerror!Message {
                 var result = Message{ .inv = undefined };
                 result.inv.count = try reader.takeInt(u32, .little);
-                result.inv.inventory = try alloc.alloc(InvItem, @intCast(result.count));
+                result.inv.inventory = try alloc.alloc(InvItem, @intCast(result.inv.count));
 
-                for (&result.inv.inventory) |*inv_item| {
+                for (result.inv.inventory) |*inv_item| {
                     inv_item.@"type" = @enumFromInt(try reader.takeInt(u32, .little));
                     inv_item.hash = try reader.takeInt(u256, .little);
                 }
+                return result;
             }
         },
         ping: struct {
@@ -476,6 +478,7 @@ pub const Protocol = struct {
     }
 };
 
+/// Abstractions to act as a node in the network
 pub const Node = struct {
     pub const Connection = struct {
         peer_address: net.Address,
@@ -664,7 +667,7 @@ pub const Node = struct {
         return try Protocol.Message.parse(&parse_reader, alloc);
     }
 
-    /// We might have evented messages
+    /// We might have evented messages in the future
     pub fn readUntilMessage(connection: *const Connection, comptime tag: @typeInfo(Protocol.Message).@"union".tag_type.?, alloc: std.mem.Allocator) !Protocol.Message {
         while (true) {
             if (readMessage(connection, alloc)) |msg| {
@@ -678,6 +681,9 @@ pub const Node = struct {
                     tag => return msg,
 
                     // @TODO have experienced being answered with inv
+                    Protocol.Message.inv => |inv| {
+                        std.log.debug("inv message: {any}\n", .{inv});
+                    },
 
                     else => {
                         std.debug.print("Unexpected command: {s}\n", .{@tagName(msg)});

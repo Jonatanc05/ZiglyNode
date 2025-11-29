@@ -8,7 +8,7 @@ const Blockchain = @import("blockchain.zig");
 const Address = std.net.Address;
 
 pub const std_options = std.Options{
-    .log_level = .info,
+    .log_level = .debug,
 };
 
 const app_name = "ZiglyNode";
@@ -112,7 +112,6 @@ pub fn main() !void {
 
     try stdout.print("\nYour address is {s}\n", .{state_ptr.address});
     while (true) {
-        try prepareOutput(stdout);
         try stdout.print("\n################################################\n", .{});
         try stdout.print("#                                              #\n", .{});
         try stdout.print("# Hello dear hodler, tell me what to do        #\n", .{});
@@ -259,16 +258,31 @@ pub fn main() !void {
                     '5' => {
                         try Network.Node.sendMessage(connection_ptr,
                             Network.Protocol.Message{
-                                .getblocks = .{
-                                    .hash_count = 1,
-                                    .block_locator = Blockchain.genesis_block_hash,
-                                    //.hash_stop = 0,
-                                    .hash_stop = 0x00000000839a8e6886ab5951d76f411475428afc90947ee320161bbf18eb6048,
-                                }
+                                .getdata = payload_with_hashes_of_blocks_being_requested: {
+                                    if (state_ptr.chain.block_headers_count <= state_ptr.chain.blocks_already_verified) {
+                                        try stdout.print("We have verified all the blocks we're aware of. Maybe try asking for new block headers?\n", .{});
+                                        continue;
+                                    }
+                                    const amount_to_verify = state_ptr.chain.block_headers_count - state_ptr.chain.blocks_already_verified;
+                                    const amount_to_request_now = @min(amount_to_verify, 1);
+                                    var result = Network.Protocol.Message.ObjectDescriptionsMessage("getdata") {
+                                        .count = amount_to_request_now,
+                                        .inventory = try allocator.alloc(Network.Protocol.ObjectDescription, amount_to_request_now),
+                                    };
+
+                                    for ((&result).inventory, state_ptr.chain.block_headers_count..) |*inv_item, idx| {
+                                        inv_item.@"type" = Network.Protocol.ObjectType.MSG_BLOCK;
+                                        var buf: [32]u8 = undefined;
+                                        // TODO cache theses hashes?
+                                        state_ptr.chain.block_headers[idx].hash(&buf);
+                                        inv_item.hash = std.mem.readInt(u256, &buf, .big);
+                                    }
+                                    break :payload_with_hashes_of_blocks_being_requested result;
+                                },
                             }
                         );
-                        const msg = try Network.Node.readUntilMessage(connection_ptr, Network.Protocol.Message.headers, allocator);
-                        std.debug.print("inv msg: {any}\n", .{msg});
+                        // const msg = try Network.Node.readUntilMessage(connection_ptr, Network.Protocol.Message.headers, allocator);
+                        // std.debug.print("inv msg: {any}\n", .{msg});
                     },
                     else => continue,
                 }

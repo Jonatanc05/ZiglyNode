@@ -4,6 +4,7 @@ const assert = std.debug.assert;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const is_windows = @import("builtin").os.tag == .windows;
 const takeMyVarInt = @import("util.zig").takeMyVarInt;
+const writeMyVarInt = @import("util.zig").writeMyVarInt;
 
 // managed dependencies
 const Bitcoin = @import("bitcoin.zig");
@@ -97,6 +98,7 @@ pub const Protocol = struct {
                 return result;
             }
         },
+        getdata: ObjectDescriptionsMessage("getdata"),
         getheaders: struct {
             version: i32 = current_version,
             hash_count: u32,
@@ -148,48 +150,8 @@ pub const Protocol = struct {
                 return .{ .headers = .{ .data = blocks } };
             }
         },
-        inv: struct {
-            /// VarInt on wire
-            count: u32,
-            inventory: []InvItem,
-
-            const InvItem = struct {
-                @"type": InvItemType,
-                hash: u256,
-            };
-            const InvItemType = enum(u32) {
-                /// Any data received along with this value may be ignored
-                @"ERROR" = 0,
-                MSG_TX = 1,
-                MSG_BLOCK = 2,
-                /// Indicates the reply should be a merkleblock message rather than a block message (when using bloom filter: BIP37)
-                MSG_FILTERED_BLOCK = 3,
-                MSG_CMPCT_BLOCK = 4, // BIP 152
-                MSG_WITNESS_TX = 0x40000001,
-                MSG_WITNESS_BLOCK = 0x40000002,
-                MSG_FILTERED_WITNESS_BLOCK = 0x40000003,
-            };
-
-            pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
-                try writer.writeInt(u32, self.count, .little);
-                for (self.inventory) |inv_item| {
-                    try writer.writeInt(u32, @intFromEnum(inv_item.@"type"), .little);
-                    try writer.writeInt(u256, inv_item.hash, .little);
-                }
-            }
-
-            pub fn parse(reader: *std.Io.Reader, alloc: std.mem.Allocator) anyerror!Message {
-                var result = Message{ .inv = undefined };
-                result.inv.count = try reader.takeInt(u32, .little);
-                result.inv.inventory = try alloc.alloc(InvItem, @intCast(result.inv.count));
-
-                for (result.inv.inventory) |*inv_item| {
-                    inv_item.@"type" = @enumFromInt(try reader.takeInt(u32, .little));
-                    inv_item.hash = try reader.takeInt(u256, .little);
-                }
-                return result;
-            }
-        },
+        inv: ObjectDescriptionsMessage("inv"),
+        notfound: ObjectDescriptionsMessage("notfound"),
         ping: struct {
             nonce: u64,
 
@@ -375,6 +337,35 @@ pub const Protocol = struct {
             };
         }
 
+        pub fn ObjectDescriptionsMessage(comptime tag_name: []const u8) type {
+            return struct {
+                /// VarInt on wire
+                count: u32,
+                inventory: []ObjectDescription,
+
+                pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
+                    try writeMyVarInt(writer, self.count, .little);
+                    for (self.inventory) |inv_item| {
+                        try writer.writeInt(u32, @intFromEnum(inv_item.@"type"), .little);
+                        try writer.writeInt(u256, inv_item.hash, .little);
+                    }
+                }
+
+                pub fn parse(reader: *std.Io.Reader, alloc: std.mem.Allocator) anyerror!Message {
+                    var result = @unionInit(Message, tag_name, undefined);
+                    var union_payload: *@This() = &@field(result, tag_name);
+                    union_payload.count = try takeMyVarInt(reader, .little);
+                    union_payload.inventory = try alloc.alloc(ObjectDescription, @intCast(union_payload.count));
+
+                    for (union_payload.inventory) |*inv_item| {
+                        inv_item.@"type" = @enumFromInt(try reader.takeInt(u32, .little));
+                        inv_item.hash = try reader.takeInt(u256, .little);
+                    }
+                    return result;
+                }
+            };
+        }
+
         /// Includes the protocol headers (https://en.bitcoin.it/wiki/Protocol_documentation#Message_structure)
         pub fn serialize(self: *const Message, buffer: []u8) ![]u8 {
             var writer: std.Io.Writer = .fixed(buffer);
@@ -469,6 +460,24 @@ pub const Protocol = struct {
             }
         }
     };
+
+    pub const ObjectDescription = struct {
+        @"type": ObjectType,
+        hash: u256,
+    };
+    pub const ObjectType = enum(u32) {
+        /// Any data received along with this value may be ignored
+        @"ERROR" = 0,
+        MSG_TX = 1,
+        MSG_BLOCK = 2,
+        /// Indicates the reply should be a merkleblock message rather than a block message (when using bloom filter: BIP37)
+        MSG_FILTERED_BLOCK = 3,
+        MSG_CMPCT_BLOCK = 4, // BIP 152
+        MSG_WITNESS_TX = 0x40000001,
+        MSG_WITNESS_BLOCK = 0x40000002,
+        MSG_FILTERED_WITNESS_BLOCK = 0x40000003,
+    };
+
 
     pub fn checksum(bytes: []u8) [4]u8 {
         var hash: [32]u8 = undefined;
@@ -679,11 +688,6 @@ pub const Node = struct {
                         );
                     },
                     tag => return msg,
-
-                    // @TODO have experienced being answered with inv
-                    Protocol.Message.inv => |inv| {
-                        std.log.debug("inv message: {any}\n", .{inv});
-                    },
 
                     else => {
                         std.debug.print("Unexpected command: {s}\n", .{@tagName(msg)});

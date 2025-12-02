@@ -239,12 +239,13 @@ pub const Tx = struct {
             alloc.destroy(tx_copy);
         }
 
-        var writer_concrete: std.Io.Writer.Allocating = .fromArrayList(alloc, &growing_buffer: {
-            break :growing_buffer try std.ArrayList(u8).initCapacity(alloc, 100);
-        });
+        var growing_buffer = try std.ArrayList(u8).initCapacity(alloc, 100);
+        var writer_concrete: std.Io.Writer.Allocating = .fromArrayList(alloc, &growing_buffer);
         defer writer_concrete.deinit();
 
-        const tx_copy_bytes = try tx_copy.serialize(&writer_concrete.writer);
+        tx_copy.serialize(&writer_concrete.writer) catch return error.OutOfMemory;
+        const tx_copy_bytes = try writer_concrete.toOwnedSlice();
+
         defer alloc.free(tx_copy_bytes);
         const tx_copy_with_hashtype = try mem.concat(alloc, u8, &[_][]const u8{ tx_copy_bytes, &[4]u8{ hashtype, 0, 0, 0 } });
         defer alloc.free(tx_copy_with_hashtype);
@@ -330,22 +331,22 @@ pub const Tx = struct {
         for (self.inputs) |input| {
             try writer.writeInt(u256, input.txid, .little);
             try writer.writeInt(u32, input.index, .little);
-            try Util.writeMyVarInt(writer, @intCast(input.script_sig.len));
+            try Util.writeMyVarInt(writer, @intCast(input.script_sig.len), .little);
             try writer.writeAll(input.script_sig);
             try writer.writeInt(u32, input.sequence, .little);
         }
 
-        try Util.writeMyVarInt(writer, @intCast(self.outputs.len));
+        try Util.writeMyVarInt(writer, @intCast(self.outputs.len), .little);
         for (self.outputs) |output| {
             try writer.writeInt(u64, output.amount, .little);
-            try Util.writeMyVarInt(writer, @intCast(output.script_pubkey.len));
+            try Util.writeMyVarInt(writer, @intCast(output.script_pubkey.len), .little);
             try writer.writeAll(output.script_pubkey);
         }
 
         if (self.witness) |witness| {
-            try Util.writeMyVarInt(writer, @intCast(witness.len));
+            try Util.writeMyVarInt(writer, @intCast(witness.len), .little);
             for (witness) |item| {
-                try Util.writeMyVarInt(writer, @intCast(item.len));
+                try Util.writeMyVarInt(writer, @intCast(item.len), .little);
                 try writer.writeAll(item);
             }
         } else {
@@ -363,18 +364,18 @@ pub const Tx = struct {
         tx.version = try reader.takeInt(u32, .little);
 
         tx.inputs = inputs: {
-            var n_inputs = try Util.takeMyVarInt(&reader, .little);
+            var n_inputs = try Util.takeMyVarInt(reader, .little);
             if (n_inputs == 0) { // witness marker
                 is_witness = true;
                 assert(try reader.takeInt(u8, .little) == 1); // witness flag
-                n_inputs = try Util.takeMyVarInt(&reader, .little);
+                n_inputs = try Util.takeMyVarInt(reader, .little);
             }
             const inputs = try alloc.alloc(TxInput, n_inputs);
             for (inputs) |*input| {
                 input.txid = try reader.takeInt(u256, .little);
                 input.index = try reader.takeInt(u32, .little);
                 input.script_sig = script_sig: {
-                    const script_sig_len = try Util.takeMyVarInt(&reader, .little);
+                    const script_sig_len = try Util.takeMyVarInt(reader, .little);
                     const script_sig = try reader.take(@intCast(script_sig_len));
                     break :script_sig try alloc.dupe(u8, script_sig);
                 };
@@ -384,12 +385,12 @@ pub const Tx = struct {
         };
 
         tx.outputs = outputs: {
-            const n_outputs = try Util.takeMyVarInt(&reader, .little);
+            const n_outputs = try Util.takeMyVarInt(reader, .little);
             const outputs = try alloc.alloc(TxOutput, n_outputs);
             for (outputs) |*output| {
                 output.amount = try reader.takeInt(u64, .little);
                 output.script_pubkey = script_pubkey: {
-                    const script_pubkey_len = try Util.takeMyVarInt(&reader, .little);
+                    const script_pubkey_len = try Util.takeMyVarInt(reader, .little);
                     const script_pubkey = try reader.take(script_pubkey_len);
                     break :script_pubkey try alloc.dupe(u8, script_pubkey);
                 };
@@ -400,10 +401,10 @@ pub const Tx = struct {
         tx.witness = witness: {
             if (!is_witness) break :witness null;
 
-            const n_items = try Util.takeMyVarInt(&reader, .little);
+            const n_items = try Util.takeMyVarInt(reader, .little);
             const temp_witness = try alloc.alloc([]u8, n_items);
             for (0..n_items) |i| {
-                const witness_read_len = try Util.takeMyVarInt(&reader, .little);
+                const witness_read_len = try Util.takeMyVarInt(reader, .little);
                 const witness_read = try reader.take(witness_read_len);
                 temp_witness[i] = try alloc.alloc(u8, witness_read_len);
                 std.mem.copyForwards( u8, temp_witness[i], witness_read);
@@ -974,12 +975,12 @@ test "tx: parse and serialize p2pkh transaction" {
     const transaction = try Tx.parse(&reader, t_alloc);
     defer transaction.deinit(t_alloc);
 
-    var writer_concrete: std.Io.Writer.Allocating = .fromArrayList(t_alloc, &growing_buffer: {
-        break :growing_buffer try std.ArrayList(u8).initCapacity(t_alloc, 100);
-    });
+    var growing_buffer = try std.ArrayList(u8).initCapacity(t_alloc, 100);
+    var writer_concrete: std.Io.Writer.Allocating = .fromArrayList(t_alloc, &growing_buffer);
     defer writer_concrete.deinit();
 
-    const serialized = try transaction.serialize(t_alloc);
+    transaction.serialize(&writer_concrete.writer) catch return error.OutOfMemory;
+    const serialized = try writer_concrete.toOwnedSlice();
     defer t_alloc.free(serialized);
     try std.testing.expectEqualSlices(u8, transaction_bytes[0..transaction_bytes.len], serialized);
 }

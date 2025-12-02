@@ -74,7 +74,7 @@ pub const Protocol = struct {
 
             pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
                 try self.header.serialize(writer);
-                Util.writeMyVarInt(writer, @intCast(self.txs.len), .little);
+                try Util.writeMyVarInt(writer, @intCast(self.txs.len), .little);
                 for (self.txs) |tx| {
                     try tx.serialize(writer);
                 }
@@ -92,7 +92,7 @@ pub const Protocol = struct {
                 const txs_len = try Util.takeMyVarInt(reader, .little);
                 result.block.txs = try alloc.alloc(Bitcoin.Tx, txs_len);
                 for (result.block.txs) |*tx| {
-                    tx.* = Bitcoin.Tx.parse(reader, alloc);
+                    tx.* = try Bitcoin.Tx.parse(reader, alloc);
                 }
 
                 return result;
@@ -722,13 +722,13 @@ pub const Node = struct {
     }
 
     /// Caller should call .deinit() on returned value. We might have evented messages in the future
-    pub fn readUntilAnyOfGivenMessageTags(connection: *const Connection, comptime tags: []@typeInfo(Protocol.Message).@"union".tag_type.?, alloc: std.mem.Allocator) !Protocol.Message {
-        while (true) {
+    pub fn readUntilAnyOfGivenMessageTags(connection: *const Connection, comptime tags: []const @typeInfo(Protocol.Message).@"union".tag_type.?, alloc: std.mem.Allocator) !Protocol.Message {
+        message_loop: while (true) {
             if (readMessage(connection, alloc)) |msg| {
                 inline for (tags) |tag| {
                     switch (msg) {
                         tag => return msg,
-                        inline else => continue,
+                        else => continue :message_loop,
                     }
                 }
                 switch (msg) {

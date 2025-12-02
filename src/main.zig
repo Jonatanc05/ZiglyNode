@@ -186,7 +186,13 @@ pub fn main() !void {
                 const input_index = 0;
                 const prev_pubkey = try Prompt.promptBytesHex("Previous pubkey script (25 bytes for P2PKH)", stdout, stdin);
                 try tx.sign(state_ptr.privkey, input_index, prev_pubkey, allocator);
-                const bytes = try tx.serialize(allocator);
+
+                var growing_buffer = try std.ArrayList(u8).initCapacity(allocator, 100);
+                var writer_concrete: std.Io.Writer.Allocating = .fromArrayList(allocator, &growing_buffer);
+                defer writer_concrete.deinit();
+
+                tx.serialize(&writer_concrete.writer) catch return error.OutOfMemory;
+                const bytes = try writer_concrete.toOwnedSlice();
                 defer allocator.free(bytes);
                 try stdout.print("\nSigned transaction:\n{x}\n", .{bytes});
                 try stdout.print("\nYou can verifiy the transaction contents using the command `bitcoin tx -json <hex>`\n", .{});

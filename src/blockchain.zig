@@ -19,6 +19,7 @@ pub const difficulty_adjustment_period = 2016;
 
 pub const State = struct {
     latest_block_header: u256,
+    // TODO deal with invalid accesses (accessing undefined)
     /// First entry should always be genesis block
     block_headers: []Bitcoin.Block,
     /// Includes genesis block on the count

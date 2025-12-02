@@ -249,6 +249,7 @@ pub fn main() !void {
                         var requests_count = try Prompt.promptInt(u32, "Type how many requests for new headers to make (2000 blocks/request)", stdout, stdin, .{});
                         requests: while (requests_count > 0) : (requests_count -= 1) {
                             const result = requestBlocks(state_ptr, connection_ptr, allocator, stdout);
+                            try prepareOutput(stdout);
                             if (result) |block_count| {
                                 try stdout.print("Total blocks: {d:0>7}\n", .{state_ptr.chain.block_headers_count});
                                 if (block_count < 2000) {
@@ -266,17 +267,18 @@ pub fn main() !void {
                             Network.Protocol.Message{
                                 .getdata = payload_with_hashes_of_blocks_being_requested: {
                                     if (state_ptr.chain.block_headers_count <= state_ptr.chain.blocks_already_verified) {
+                                        try prepareOutput(stdout);
                                         try stdout.print("We have verified all the blocks we're aware of. Maybe try asking for new block headers?\n", .{});
                                         continue;
                                     }
                                     const amount_to_verify = state_ptr.chain.block_headers_count - state_ptr.chain.blocks_already_verified;
-                                    const amount_to_request_now = @min(amount_to_verify, 1);
+                                    const amount_to_request_now = @min(amount_to_verify, 1); // TODO Adjust max limit
                                     var result = Network.Protocol.Message.ObjectDescriptionsMessage("getdata") {
                                         .count = amount_to_request_now,
                                         .inventory = try allocator.alloc(Network.Protocol.ObjectDescription, amount_to_request_now),
                                     };
 
-                                    for ((&result).inventory, state_ptr.chain.block_headers_count..) |*inv_item, idx| {
+                                    for ((&result).inventory, state_ptr.chain.blocks_already_verified..) |*inv_item, idx| {
                                         inv_item.@"type" = Network.Protocol.ObjectType.MSG_BLOCK;
                                         var buf: [32]u8 = undefined;
                                         // TODO cache theses hashes?
@@ -288,7 +290,7 @@ pub fn main() !void {
                             }
                         );
                         const msg = try Network.Node.readUntilAnyOfGivenMessageTags(connection_ptr, &.{Network.Protocol.Message.block, Network.Protocol.Message.notfound}, allocator);
-                        std.debug.print("inv msg: {any}\n", .{msg});
+                        std.debug.print("block msg: {any}\n", .{msg});
                     },
                     else => continue,
                 }

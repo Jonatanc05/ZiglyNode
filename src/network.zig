@@ -4,9 +4,11 @@ const assert = std.debug.assert;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const is_windows = @import("builtin").os.tag == .windows;
 const takeMyVarInt = @import("util.zig").takeMyVarInt;
+const writeMyVarInt = @import("util.zig").writeMyVarInt;
 
 // managed dependencies
 const Bitcoin = @import("bitcoin.zig");
+const Util = @import("util.zig");
 
 fn ipv4_as_ipv6(ipv4: [4]u8) [16]u8 {
     return [1]u8{0} ** 10 ++ [2]u8{ 0xff, 0xff } ++ ipv4;
@@ -16,6 +18,7 @@ fn u32ipv4_as_ipv6(ipv4: u32) [16]u8 {
     return ipv4_as_ipv6(ipv4_bytes);
 }
 
+/// Low level protocol implementation
 pub const Protocol = struct {
     pub const current_version = 60002;
 
@@ -37,7 +40,7 @@ pub const Protocol = struct {
             addr_array: []Addr,
 
             pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
-                try Bitcoin.Aux.writeVarint(writer, self.count);
+                try Util.writeMyVarInt(writer, self.count, .little);
                 for (self.addr_array) |addr| {
                     try writer.writeInt(u32, addr.time, .little);
                     try writer.writeInt(u64, addr.services, .little);
@@ -65,7 +68,67 @@ pub const Protocol = struct {
                 alloc.free(self.addr_array);
             }
         },
+        block: struct {
+            header: Bitcoin.Block,
+            txs: []Bitcoin.Tx,
+
+            pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
+                try self.header.serialize(writer);
+                try Util.writeMyVarInt(writer, @intCast(self.txs.len), .little);
+                for (self.txs) |tx| {
+                    try tx.serialize(writer);
+                }
+            }
+
+            pub fn parse(reader: *std.Io.Reader, alloc: std.mem.Allocator) anyerror!Message {
+                var result = Message {
+                    .block = .{
+                        .header = undefined,
+                        .txs = undefined,
+                    }
+                };
+
+                result.block.header = Bitcoin.Block.parse(reader);
+                const txs_len = try Util.takeMyVarInt(reader, .little);
+                result.block.txs = try alloc.alloc(Bitcoin.Tx, txs_len);
+                for (result.block.txs) |*tx| {
+                    tx.* = try Bitcoin.Tx.parse(reader, alloc);
+                }
+
+                return result;
+            }
+        },
         getaddr: NoPayloadMessage("getaddr"),
+        // TODO: block locator hashes to detect if we are on an invalid (shorter) chain
+        getblocks: struct {
+            version: i32 = current_version,
+            /// VarInt on wire
+            hash_count: u32,
+            /// Currently only one hash (hash_count must be 1)
+            block_locator: u256,
+            /// Set 0 to get as many as possible
+            hash_stop: u256,
+
+            pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
+                try writer.writeInt(i32, self.version, .little);
+                try Util.writeMyVarInt(writer, self.hash_count, .little);
+                try writer.writeInt(u256, self.block_locator, .little);
+                try writer.writeInt(u256, self.hash_stop, .little);
+            }
+
+            pub fn parse(reader: *std.Io.Reader, unused: std.mem.Allocator) anyerror!Message {
+                _ = unused;
+                var result = Message{ .getblocks = undefined };
+
+                result.getblocks.version = try reader.takeInt(i32, .little);
+                result.getblocks.hash_count = try takeMyVarInt(reader, .little);
+                result.getblocks.block_locator = try reader.takeInt(u256, .little);
+                result.getblocks.hash_stop = try reader.takeInt(u256, .little);
+
+                return result;
+            }
+        },
+        getdata: ObjectDescriptionsMessage("getdata"),
         getheaders: struct {
             version: i32 = current_version,
             hash_count: u32,
@@ -75,7 +138,7 @@ pub const Protocol = struct {
 
             pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
                 try writer.writeInt(i32, self.version, .little);
-                try Bitcoin.Aux.writeVarint(writer, self.hash_count);
+                try Util.writeMyVarInt(writer, self.hash_count, .little);
                 try writer.writeInt(u256, self.hash_start_block, .little);
                 try writer.writeInt(u256, self.hash_final_block, .little);
             }
@@ -96,11 +159,11 @@ pub const Protocol = struct {
             data: []Bitcoin.Block,
 
             pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
-                try Bitcoin.Aux.writeVarint(writer, @intCast(self.data.len));
+                try Util.writeMyVarInt(writer, @intCast(self.data.len), .little);
                 for (self.data) |block| {
                     var buffer: [80]u8 = undefined;
                     var bwriter: std.Io.Writer = .fixed(&buffer);
-                    block.serialize(&bwriter);
+                    try block.serialize(&bwriter);
                     try writer.writeAll(&buffer);
                     try writer.writeInt(u8, 0, .little);
                 }
@@ -117,6 +180,8 @@ pub const Protocol = struct {
                 return .{ .headers = .{ .data = blocks } };
             }
         },
+        inv: ObjectDescriptionsMessage("inv"),
+        notfound: ObjectDescriptionsMessage("notfound"),
         ping: struct {
             nonce: u64,
 
@@ -146,6 +211,21 @@ pub const Protocol = struct {
                     .pong = .{
                         .nonce = try reader.takeInt(u64, .little)
                     },
+                };
+            }
+        },
+        tx: struct {
+            tx: Bitcoin.Tx,
+
+            pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
+                try self.tx.serialize(writer);
+            }
+
+            pub fn parse(reader: *std.Io.Reader, alloc: std.mem.Allocator) anyerror!Message {
+                return Message {
+                    .tx = .{
+                        .tx = try Bitcoin.Tx.parse(reader, alloc),
+                    }
                 };
             }
         },
@@ -302,6 +382,35 @@ pub const Protocol = struct {
             };
         }
 
+        pub fn ObjectDescriptionsMessage(comptime tag_name: []const u8) type {
+            return struct {
+                /// VarInt on wire
+                count: u32,
+                inventory: []ObjectDescription,
+
+                pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
+                    try writeMyVarInt(writer, self.count, .little);
+                    for (self.inventory) |inv_item| {
+                        try writer.writeInt(u32, @intFromEnum(inv_item.@"type"), .little);
+                        try writer.writeInt(u256, inv_item.hash, .little);
+                    }
+                }
+
+                pub fn parse(reader: *std.Io.Reader, alloc: std.mem.Allocator) anyerror!Message {
+                    var result = @unionInit(Message, tag_name, undefined);
+                    var union_payload: *@This() = &@field(result, tag_name);
+                    union_payload.count = try takeMyVarInt(reader, .little);
+                    union_payload.inventory = try alloc.alloc(ObjectDescription, @intCast(union_payload.count));
+
+                    for (union_payload.inventory) |*inv_item| {
+                        inv_item.@"type" = @enumFromInt(try reader.takeInt(u32, .little));
+                        inv_item.hash = try reader.takeInt(u256, .little);
+                    }
+                    return result;
+                }
+            };
+        }
+
         /// Includes the protocol headers (https://en.bitcoin.it/wiki/Protocol_documentation#Message_structure)
         pub fn serialize(self: *const Message, buffer: []u8) ![]u8 {
             var writer: std.Io.Writer = .fixed(buffer);
@@ -397,6 +506,24 @@ pub const Protocol = struct {
         }
     };
 
+    pub const ObjectDescription = struct {
+        @"type": ObjectType,
+        hash: u256,
+    };
+    pub const ObjectType = enum(u32) {
+        /// Any data received along with this value may be ignored
+        @"ERROR" = 0,
+        MSG_TX = 1,
+        MSG_BLOCK = 2,
+        /// Indicates the reply should be a merkleblock message rather than a block message (when using bloom filter: BIP37)
+        MSG_FILTERED_BLOCK = 3,
+        MSG_CMPCT_BLOCK = 4, // BIP 152
+        MSG_WITNESS_TX = 0x40000001,
+        MSG_WITNESS_BLOCK = 0x40000002,
+        MSG_FILTERED_WITNESS_BLOCK = 0x40000003,
+    };
+
+
     pub fn checksum(bytes: []u8) [4]u8 {
         var hash: [32]u8 = undefined;
         Sha256.hash(bytes, &hash, .{});
@@ -405,6 +532,7 @@ pub const Protocol = struct {
     }
 };
 
+/// Abstractions to act as a node in the network
 pub const Node = struct {
     pub const Connection = struct {
         peer_address: net.Address,
@@ -593,10 +721,16 @@ pub const Node = struct {
         return try Protocol.Message.parse(&parse_reader, alloc);
     }
 
-    /// Should be only temporary, we might (probably should) have evented messages
-    pub fn readUntilMessage(connection: *const Connection, comptime tag: @typeInfo(Protocol.Message).@"union".tag_type.?, alloc: std.mem.Allocator) !Protocol.Message {
-        while (true) {
+    /// Caller should call .deinit() on returned value. We might have evented messages in the future
+    pub fn readUntilAnyOfGivenMessageTags(connection: *const Connection, comptime tags: []const @typeInfo(Protocol.Message).@"union".tag_type.?, alloc: std.mem.Allocator) !Protocol.Message {
+        message_loop: while (true) {
             if (readMessage(connection, alloc)) |msg| {
+                inline for (tags) |tag| {
+                    switch (msg) {
+                        tag => return msg,
+                        else => continue :message_loop,
+                    }
+                }
                 switch (msg) {
                     Protocol.Message.ping => |ping| {
                         try Node.sendMessage(
@@ -604,9 +738,6 @@ pub const Node = struct {
                             Protocol.Message{ .pong = .{ .nonce = ping.nonce } },
                         );
                     },
-                    tag => return msg,
-
-                    // @TODO have experienced being answered with inv
 
                     else => {
                         std.debug.print("Unexpected command: {s}\n", .{@tagName(msg)});

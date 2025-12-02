@@ -113,12 +113,25 @@ pub fn main() !void {
     try stdout.print("\nYour address is {s}\n", .{state_ptr.address});
     while (true) {
         try stdout.print("\n################################################\n", .{});
-        try stdout.print("\nHello dear hodler, tell me what can I do for you\n", .{});
-        try stdout.print("1. View blockchain state\n", .{});
-        try stdout.print("2. Connect to a new peer\n", .{});
-        try stdout.print("3. List peers (interact)\n", .{});
-        try stdout.print("4. Sign a transaction\n", .{});
-        try stdout.print("5. Exit\n\n", .{});
+        try stdout.print("#                                              #\n", .{});
+        try stdout.print("# Hello dear hodler, tell me what to do        #\n", .{});
+        try stdout.print("#   1. View blockchain state                   #\n", .{});
+        try stdout.print("#   2. Connect to a new peer                   #\n", .{});
+        try stdout.print("#   3. List peers ({d})                          #\n",
+            .{ active_connections_count: {
+                var count: u32 = 0;
+                for (state_ptr.connections) |c| {
+                    count += if (c.alive) 1 else 0;
+                }
+                break :active_connections_count count;
+            }
+        });
+        try stdout.print("#   4. Sign a transaction                      #\n", .{});
+        try stdout.print("#   5. Exit                                    #\n", .{});
+        try stdout.print("#                                              #\n", .{});
+        try stdout.print("# NOTE: Type \"i <N>\" to interact with peer     #\n", .{});
+        try stdout.print("# number N                                     #\n", .{});
+        try stdout.print("################################################\n", .{});
 
         const input = try stdin.takeDelimiterExclusive('\n');
         std.debug.assert(try stdin.discardShort(1) == 1);
@@ -126,11 +139,12 @@ pub fn main() !void {
         const b = input[0];
         outerswitch: switch (b) {
             '1' => {
+                try prepareOutput(stdout);
                 try stdout.print("\n=== Blockchain State ===\n", .{});
                 try stdout.print("Block headers count: {d}\n", .{state_ptr.chain.block_headers_count});
 
                 if (state_ptr.chain.block_headers_count > 1)
-                    try stdout.print("Latest block hash: {x:0>64}\n", .{state_ptr.chain.latest_block_header});
+                    try stdout.print("Latest block header: {x:0>64}\n", .{state_ptr.chain.latest_block_header});
                 try stdout.print("========================\n", .{});
             },
             '2' => {
@@ -142,6 +156,7 @@ pub fn main() !void {
                 };
 
                 const target_ip_address = try Prompt.promptIpAddress(stdout, stdin, .{ .default_value = "127.0.0.1" });
+                try prepareOutput(stdout);
 
                 state_ptr.connections[new_peer_id].data = Network.Node.connect(target_ip_address, app_name, allocator, connection_timeout_seconds) catch |err| {
                     std.log.err("Failed to connect to {f}: {t}", .{ target_ip_address, err });
@@ -156,6 +171,7 @@ pub fn main() !void {
                 });
             },
             '3' => {
+                try prepareOutput(stdout);
                 try stdout.print("======== Peer list ========\n", .{});
                 for (state_ptr.connections, 0..) |conn, i| {
                     if (conn.alive)
@@ -170,7 +186,13 @@ pub fn main() !void {
                 const input_index = 0;
                 const prev_pubkey = try Prompt.promptBytesHex("Previous pubkey script (25 bytes for P2PKH)", stdout, stdin);
                 try tx.sign(state_ptr.privkey, input_index, prev_pubkey, allocator);
-                const bytes = try tx.serialize(allocator);
+
+                var growing_buffer = try std.ArrayList(u8).initCapacity(allocator, 100);
+                var writer_concrete: std.Io.Writer.Allocating = .fromArrayList(allocator, &growing_buffer);
+                defer writer_concrete.deinit();
+
+                tx.serialize(&writer_concrete.writer) catch return error.OutOfMemory;
+                const bytes = try writer_concrete.toOwnedSlice();
                 defer allocator.free(bytes);
                 try stdout.print("\nSigned transaction:\n{x}\n", .{bytes});
                 try stdout.print("\nYou can verifiy the transaction contents using the command `bitcoin tx -json <hex>`\n", .{});
@@ -193,9 +215,10 @@ pub fn main() !void {
                 const connection_ptr = &state_ptr.connections[peer_id].data;
                 try stdout.print("\nWhat do you want to do?\n", .{});
                 try stdout.print("1. disconnect from peer\n", .{});
-                try stdout.print("2. ask for block headers\n", .{});
-                try stdout.print("3. ask for new peers and connect \n", .{});
+                try stdout.print("2. ask for new peers and connect \n", .{});
+                try stdout.print("3. ask for block headers\n", .{});
                 try stdout.print("4. ask for many block headers\n", .{});
+                try stdout.print("5. ask for entire blocks\n", .{});
                 const action = try stdin.takeDelimiterExclusive('\n');
                 std.debug.assert(try stdin.discardShort(1) == 1);
                 switch (action[0]) {
@@ -204,14 +227,6 @@ pub fn main() !void {
                         state_ptr.active_connections -= 1;
                     },
                     '2' => {
-                        const result = requestBlocks(state_ptr, connection_ptr, allocator, stdout);
-                        if (result) |block_count| {
-                            try stdout.print("{d} new blocks received!\n", .{block_count});
-                        } else |err| {
-                            try stdout.print("Could not request blocks: {t}", .{err});
-                        }
-                    },
-                    '3' => {
                         var buffer: [max_concurrent_tasks * 105]u8 = undefined; // 105 is empirical and might change
                         var buffer_alloc = std.heap.FixedBufferAllocator.init(&buffer);
                         var pool: Thread.Pool = undefined;
@@ -222,10 +237,19 @@ pub fn main() !void {
                         while (pool.run_queue.popFirst() != null) {}
                         for (pool.threads) |thr| thr.detach();
                     },
+                    '3' => {
+                        const result = requestBlocks(state_ptr, connection_ptr, allocator, stdout);
+                        if (result) |block_count| {
+                            try stdout.print("{d} new blocks received!\n", .{block_count});
+                        } else |err| {
+                            try stdout.print("Could not request blocks: {t}", .{err});
+                        }
+                    },
                     '4' => {
                         var requests_count = try Prompt.promptInt(u32, "Type how many requests for new headers to make (2000 blocks/request)", stdout, stdin, .{});
                         requests: while (requests_count > 0) : (requests_count -= 1) {
                             const result = requestBlocks(state_ptr, connection_ptr, allocator, stdout);
+                            try prepareOutput(stdout);
                             if (result) |block_count| {
                                 try stdout.print("Total blocks: {d:0>7}\n", .{state_ptr.chain.block_headers_count});
                                 if (block_count < 2000) {
@@ -237,6 +261,36 @@ pub fn main() !void {
                                 break :requests;
                             }
                         }
+                    },
+                    '5' => {
+                        try Network.Node.sendMessage(connection_ptr,
+                            Network.Protocol.Message{
+                                .getdata = payload_with_hashes_of_blocks_being_requested: {
+                                    if (state_ptr.chain.block_headers_count <= state_ptr.chain.blocks_already_verified) {
+                                        try prepareOutput(stdout);
+                                        try stdout.print("We have verified all the blocks we're aware of. Maybe try asking for new block headers?\n", .{});
+                                        continue;
+                                    }
+                                    const amount_to_verify = state_ptr.chain.block_headers_count - state_ptr.chain.blocks_already_verified;
+                                    const amount_to_request_now = @min(amount_to_verify, 1); // TODO Adjust max limit
+                                    var result = Network.Protocol.Message.ObjectDescriptionsMessage("getdata") {
+                                        .count = amount_to_request_now,
+                                        .inventory = try allocator.alloc(Network.Protocol.ObjectDescription, amount_to_request_now),
+                                    };
+
+                                    for ((&result).inventory, state_ptr.chain.blocks_already_verified..) |*inv_item, idx| {
+                                        inv_item.@"type" = Network.Protocol.ObjectType.MSG_BLOCK;
+                                        var buf: [32]u8 = undefined;
+                                        // TODO cache theses hashes?
+                                        state_ptr.chain.block_headers[idx].hash(&buf);
+                                        inv_item.hash = std.mem.readInt(u256, &buf, .big);
+                                    }
+                                    break :payload_with_hashes_of_blocks_being_requested result;
+                                },
+                            }
+                        );
+                        const msg = try Network.Node.readUntilAnyOfGivenMessageTags(connection_ptr, &.{Network.Protocol.Message.block, Network.Protocol.Message.notfound}, allocator);
+                        std.debug.print("block msg: {any}\n", .{msg});
                     },
                     else => continue,
                 }
@@ -263,6 +317,16 @@ pub fn main() !void {
             std.log.err("failed to write blocks to {s}: {t}", .{ blockheaders_filename, err });
             break :write_blockheaders_to_disk;
         };
+    }
+}
+
+fn prepareOutput(stdout: ?*std.Io.Writer) !void {
+    if (stdout) |out| {
+        try out.print("\n\n\n\n\n\n\n\n\n\n", .{});
+    } else {
+        var stdout_writer = std.fs.File.stdout().writer(&.{});
+        const out = &stdout_writer.interface;
+        try out.print("\n\n\n\n\n\n\n\n\n\n", .{});
     }
 }
 
@@ -365,7 +429,7 @@ fn requestBlocks(state: *State, connection: *const Network.Node.Connection, allo
         },
     });
 
-    const message = try Network.Node.readUntilMessage(connection, Network.Protocol.Message.headers, alloc);
+    const message = try Network.Node.readUntilAnyOfGivenMessageTags(connection, &.{Network.Protocol.Message.headers}, alloc);
     defer message.deinit(alloc);
     std.debug.assert(message == .headers);
     const blocks = message.headers.data;
@@ -393,7 +457,7 @@ fn requestNewPeers(state: *State, connection: *const Network.Node.Connection, al
     }
     std.log.info("Requesting for new peers and connecting...", .{});
     try Network.Node.sendMessage(connection, Network.Protocol.Message{ .getaddr = .{} });
-    const message = try Network.Node.readUntilMessage(connection, Network.Protocol.Message.addr, alloc);
+    const message = try Network.Node.readUntilAnyOfGivenMessageTags(connection, &.{Network.Protocol.Message.addr}, alloc);
     defer message.deinit(alloc);
     std.debug.assert(message == .addr);
     std.log.debug("Received {} new addresses, trying to connect...", .{message.addr.count});
@@ -468,6 +532,7 @@ fn requestNewPeers(state: *State, connection: *const Network.Node.Connection, al
     Thread.sleep(500_000_000);
     for (0..num_tasks) |_| semaphore.wait();
 
+    try prepareOutput(null);
     std.log.info("Connected to {d} new peers\n", .{new_connections_count});
 }
 

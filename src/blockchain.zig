@@ -19,21 +19,26 @@ pub const difficulty_adjustment_period = 2016;
 
 pub const State = struct {
     latest_block_header: u256,
+    // TODO deal with invalid accesses (accessing undefined)
     /// First entry should always be genesis block
     block_headers: []Bitcoin.Block,
     /// Includes genesis block on the count
     block_headers_count: u32,
+    /// We currently only support validating sequentially
+    blocks_already_verified: u32,
 
     pub fn init(alloc: std.mem.Allocator) !State {
         var self: State = .{
-            .latest_block_header = 0,
             .block_headers = try alloc.alloc(Bitcoin.Block, 1_000_000),
-            .block_headers_count = 0,
+            .block_headers_count = undefined,
+            .latest_block_header = undefined,
+            .blocks_already_verified = undefined,
         };
 
-        self.latest_block_header = genesis_block_hash;
         self.block_headers[0] = genesis_block;
         self.block_headers_count = 1;
+        self.latest_block_header = genesis_block_hash;
+        self.blocks_already_verified = 0;
 
         return self;
     }
@@ -90,12 +95,13 @@ pub const State = struct {
 
     pub fn serialize(self: *State, writer: *std.Io.Writer) !void {
         try writer.writeInt(u32, self.block_headers_count, .little);
+        // TODO I think this flush is residual from a debugging session. Try removing
         try writer.flush();
 
         // Save blocks excluding genesis block (which has index 0)
         if (self.block_headers_count > 1) {
             for (self.block_headers[1..self.block_headers_count]) |block| {
-                block.serialize(writer);
+                try block.serialize(writer);
             }
         }
         try writer.flush();

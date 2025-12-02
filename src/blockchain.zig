@@ -94,12 +94,13 @@ pub const State = struct {
 
     pub fn serialize(self: *State, writer: *std.Io.Writer) !void {
         try writer.writeInt(u32, self.block_headers_count, .little);
+        // TODO I think this flush is residual from a debugging session. Try removing
         try writer.flush();
 
         // Save blocks excluding genesis block (which has index 0)
         if (self.block_headers_count > 1) {
             for (self.block_headers[1..self.block_headers_count]) |block| {
-                block.serialize(writer);
+                try block.serialize(writer);
             }
         }
         try writer.flush();

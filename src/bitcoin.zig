@@ -239,7 +239,12 @@ pub const Tx = struct {
             alloc.destroy(tx_copy);
         }
 
-        const tx_copy_bytes = try tx_copy.serialize(alloc);
+        var writer_concrete: std.Io.Writer.Allocating = .fromArrayList(alloc, &growing_buffer: {
+            break :growing_buffer try std.ArrayList(u8).initCapacity(alloc, 100);
+        });
+        defer writer_concrete.deinit();
+
+        const tx_copy_bytes = try tx_copy.serialize(&writer_concrete.writer);
         defer alloc.free(tx_copy_bytes);
         const tx_copy_with_hashtype = try mem.concat(alloc, u8, &[_][]const u8{ tx_copy_bytes, &[4]u8{ hashtype, 0, 0, 0 } });
         defer alloc.free(tx_copy_with_hashtype);
@@ -313,53 +318,45 @@ pub const Tx = struct {
     }
 
     /// Returns a slice owned by the caller
-    pub fn serialize(self: *const Tx, alloc: mem.Allocator) mem.Allocator.Error![]u8 {
-        var bytes = try std.ArrayList(u8).initCapacity(alloc, 100);
-        // Takes ownership, thus no need to deinit `bytes`
-        var writer_concrete: std.Io.Writer.Allocating = .fromArrayList(alloc, &bytes);
-        defer writer_concrete.deinit();
-        var writer = &writer_concrete.writer;
-
-        writer.writeInt(u32, self.version, .little) catch return mem.Allocator.Error.OutOfMemory;
+    pub fn serialize(self: *const Tx, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        try writer.writeInt(u32, self.version, .little);
 
         if (self.witness != null) {
-            writer.writeByte(0) catch return mem.Allocator.Error.OutOfMemory;
-            writer.writeByte(1) catch return mem.Allocator.Error.OutOfMemory;
+            try writer.writeByte(0);
+            try writer.writeByte(1);
         }
 
-        Util.writeMyVarInt(writer, @intCast(self.inputs.len), .little) catch return mem.Allocator.Error.OutOfMemory;
+        try Util.writeMyVarInt(writer, @intCast(self.inputs.len), .little);
         for (self.inputs) |input| {
-            writer.writeInt(u256, input.txid, .little) catch return mem.Allocator.Error.OutOfMemory;
-            writer.writeInt(u32, input.index, .little) catch return mem.Allocator.Error.OutOfMemory;
-            Util.writeMyVarInt(writer, @intCast(input.script_sig.len), .little) catch return mem.Allocator.Error.OutOfMemory;
-            writer.writeAll(input.script_sig) catch return mem.Allocator.Error.OutOfMemory;
-            writer.writeInt(u32, input.sequence, .little) catch return mem.Allocator.Error.OutOfMemory;
+            try writer.writeInt(u256, input.txid, .little);
+            try writer.writeInt(u32, input.index, .little);
+            try Util.writeMyVarInt(writer, @intCast(input.script_sig.len));
+            try writer.writeAll(input.script_sig);
+            try writer.writeInt(u32, input.sequence, .little);
         }
 
-        Util.writeMyVarInt(writer, @intCast(self.outputs.len), .little) catch return mem.Allocator.Error.OutOfMemory;
+        try Util.writeMyVarInt(writer, @intCast(self.outputs.len));
         for (self.outputs) |output| {
-            writer.writeInt(u64, output.amount, .little) catch return mem.Allocator.Error.OutOfMemory;
-            Util.writeMyVarInt(writer, @intCast(output.script_pubkey.len), .little) catch return mem.Allocator.Error.OutOfMemory;
-            writer.writeAll(output.script_pubkey) catch return mem.Allocator.Error.OutOfMemory;
+            try writer.writeInt(u64, output.amount, .little);
+            try Util.writeMyVarInt(writer, @intCast(output.script_pubkey.len));
+            try writer.writeAll(output.script_pubkey);
         }
 
         if (self.witness) |witness| {
-            Util.writeMyVarInt(writer, @intCast(witness.len), .little) catch return mem.Allocator.Error.OutOfMemory;
+            try Util.writeMyVarInt(writer, @intCast(witness.len));
             for (witness) |item| {
-                Util.writeMyVarInt(writer, @intCast(item.len), .little) catch return mem.Allocator.Error.OutOfMemory;
-                writer.writeAll(item) catch return mem.Allocator.Error.OutOfMemory;
+                try Util.writeMyVarInt(writer, @intCast(item.len));
+                try writer.writeAll(item);
             }
         } else {
             // A guy (MrRGnome) told me non-segwit transactions also have witness???
-            //Util.writeVarint(writer, 0) catch return mem.Allocator.Error.OutOfMemory;
+            //try Util.writeVarint(writer, 0);
         }
 
-        writer.writeInt(u32, self.locktime, .little) catch return mem.Allocator.Error.OutOfMemory;
-        return writer_concrete.toOwnedSlice();
+        try writer.writeInt(u32, self.locktime, .little);
     }
 
-    pub fn parse(data: []const u8, alloc: mem.Allocator) !Tx {
-        var reader: std.Io.Reader = .fixed(data);
+    pub fn parse(reader: *std.Io.Reader, alloc: mem.Allocator) !Tx {
         var tx: Tx = undefined;
         var is_witness = false;
 
@@ -823,13 +820,13 @@ pub const Block = struct {
     nonce: u32,
 
     /// Returns a slice to the written bytes
-    pub fn serialize(self: *const Block, writer: *std.Io.Writer) void {
-        writer.writeInt(u32, self.version, .little) catch unreachable;
-        for (0..32) |i| writer.writeByte(self.prev_block[31 - i]) catch unreachable;
-        for (0..32) |i| writer.writeByte(self.merkle_root[31 - i]) catch unreachable;
-        writer.writeInt(u32, self.timestamp, .little) catch unreachable;
-        writer.writeInt(u32, self.bits, .little) catch unreachable;
-        writer.writeInt(u32, self.nonce, .big) catch unreachable;
+    pub fn serialize(self: *const Block, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        try writer.writeInt(u32, self.version, .little);
+        for (0..32) |i| try writer.writeByte(self.prev_block[31 - i]);
+        for (0..32) |i| try writer.writeByte(self.merkle_root[31 - i]);
+        try writer.writeInt(u32, self.timestamp, .little);
+        try writer.writeInt(u32, self.bits, .little);
+        try writer.writeInt(u32, self.nonce, .big);
         //std.debug.assert(writer.end == 80);
     }
 
@@ -853,7 +850,7 @@ pub const Block = struct {
         std.debug.assert(buffer.len >= 32);
         var block_buffer: [80]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&block_buffer);
-        self.serialize(&writer);
+        self.serialize(&writer) catch unreachable;
         var intermediate_buffer1: [32]u8 = undefined;
         Sha256.hash(&block_buffer, intermediate_buffer1[0..32], .{});
         Sha256.hash(intermediate_buffer1[0..32], buffer[0..32], .{});
@@ -973,8 +970,14 @@ test "tx: parse and serialize p2pkh transaction" {
         0x00, 0x00, 0x00, 0x00 // locktime
     };
     // zig fmt: on
-    const transaction = try Tx.parse(transaction_bytes[0..transaction_bytes.len], t_alloc);
+    var reader: std.Io.Reader = .fixed(transaction_bytes[0..transaction_bytes.len]);
+    const transaction = try Tx.parse(&reader, t_alloc);
     defer transaction.deinit(t_alloc);
+
+    var writer_concrete: std.Io.Writer.Allocating = .fromArrayList(t_alloc, &growing_buffer: {
+        break :growing_buffer try std.ArrayList(u8).initCapacity(t_alloc, 100);
+    });
+    defer writer_concrete.deinit();
 
     const serialized = try transaction.serialize(t_alloc);
     defer t_alloc.free(serialized);
@@ -1002,7 +1005,8 @@ test "tx: parse p2wpkh transaction" {
         0x00, 0x00, 0x00, 0x00 // locktime
     };
     // zig fmt: on
-    const transaction = try Tx.parse(transaction_bytes[0..transaction_bytes.len], t_alloc);
+    var reader: std.Io.Reader = .fixed(transaction_bytes[0..transaction_bytes.len]);
+    const transaction = try Tx.parse(&reader, t_alloc);
     defer transaction.deinit(t_alloc);
     try expect(transaction.inputs.len == 1);
     try expect(transaction.outputs.len == 2);
@@ -1080,7 +1084,8 @@ test "tx: transaction signing and checksig" {
 
 test "block: isCoinbase" {
     const tx_bytes = [_]u8{ 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x5e, 0x03, 0xd7, 0x1b, 0x07, 0x25, 0x4d, 0x69, 0x6e, 0x65, 0x64, 0x20, 0x62, 0x79, 0x20, 0x41, 0x6e, 0x74, 0x50, 0x6f, 0x6f, 0x6c, 0x20, 0x62, 0x6a, 0x31, 0x31, 0x2f, 0x45, 0x42, 0x31, 0x2f, 0x41, 0x44, 0x36, 0x2f, 0x43, 0x20, 0x59, 0x14, 0x29, 0x31, 0x01, 0xfa, 0xbe, 0x6d, 0x6d, 0x67, 0x8e, 0x2c, 0x8c, 0x34, 0xaf, 0xc3, 0x68, 0x96, 0xe7, 0xd9, 0x40, 0x28, 0x24, 0xed, 0x38, 0xe8, 0x56, 0x67, 0x6e, 0xe9, 0x4b, 0xfd, 0xb0, 0xc6, 0xc4, 0xbc, 0xd8, 0xb2, 0xe5, 0x66, 0x6a, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc7, 0x27, 0x00, 0x00, 0xa5, 0xe0, 0x0e, 0x00, 0xff, 0xff, 0xff, 0xff, 0x01, 0xfa, 0xf2, 0x0b, 0x58, 0x00, 0x00, 0x00, 0x00, 0x19, 0x76, 0xa9, 0x14, 0x33, 0x8c, 0x84, 0x84, 0x94, 0x23, 0x99, 0x24, 0x71, 0xbf, 0xfb, 0x1a, 0x54, 0xa8, 0xd9, 0xb1, 0xd6, 0x9d, 0xc2, 0x8a, 0x88, 0xac, 0x00, 0x00, 0x00, 0x00 };
-    const tx = try Tx.parse(&tx_bytes, t_alloc);
+    var reader: std.Io.Reader = .fixed(tx_bytes);
+    const tx = try Tx.parse(&reader, t_alloc);
     defer tx.deinit(t_alloc);
     try expect(tx.isCoinbase() == true);
 }
@@ -1106,14 +1111,14 @@ test "block: Block serialize" {
         var block = Block.parse(&reader);
         var buffer: [80]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&buffer);
-        block.serialize(&writer);
+        try block.serialize(&writer);
         try std.testing.expectEqualSlices(u8, &block_raw, &buffer);
     }
     {
         var block = @import("blockchain.zig").genesis_block;
         var buffer: [80]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&buffer);
-        block.serialize(&writer);
+        try block.serialize(&writer);
         try std.testing.expectEqualSlices(u8,
             &[_]u8{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3b, 0xa3, 0xed, 0xfd, 0x7a, 0x7b, 0x12, 0xb2, 0x7a, 0xc7, 0x2c, 0x3e, 0x67, 0x76, 0x8f, 0x61, 0x7f, 0xc8, 0x1b, 0xc3, 0x88, 0x8a, 0x51, 0x32, 0x3a, 0x9f, 0xb8, 0xaa, 0x4b, 0x1e, 0x5e, 0x4a, 0x29, 0xab, 0x5f, 0x49, 0xff, 0xff, 0x00, 0x1d, 0x1d, 0xac, 0x2b, 0x7c },
             &buffer,

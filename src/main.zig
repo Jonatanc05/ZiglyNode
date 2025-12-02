@@ -281,8 +281,8 @@ pub fn main() !void {
                                 },
                             }
                         );
-                        // const msg = try Network.Node.readUntilMessage(connection_ptr, Network.Protocol.Message.headers, allocator);
-                        // std.debug.print("inv msg: {any}\n", .{msg});
+                        const msg = try Network.Node.readUntilAnyOfGivenMessageTags(connection_ptr, &.{Network.Protocol.Message.block, Network.Protocol.Message.notfound}, allocator);
+                        std.debug.print("inv msg: {any}\n", .{msg});
                     },
                     else => continue,
                 }
@@ -421,7 +421,7 @@ fn requestBlocks(state: *State, connection: *const Network.Node.Connection, allo
         },
     });
 
-    const message = try Network.Node.readUntilMessage(connection, Network.Protocol.Message.headers, alloc);
+    const message = try Network.Node.readUntilAnyOfGivenMessageTags(connection, &.{Network.Protocol.Message.headers}, alloc);
     defer message.deinit(alloc);
     std.debug.assert(message == .headers);
     const blocks = message.headers.data;
@@ -449,7 +449,7 @@ fn requestNewPeers(state: *State, connection: *const Network.Node.Connection, al
     }
     std.log.info("Requesting for new peers and connecting...", .{});
     try Network.Node.sendMessage(connection, Network.Protocol.Message{ .getaddr = .{} });
-    const message = try Network.Node.readUntilMessage(connection, Network.Protocol.Message.addr, alloc);
+    const message = try Network.Node.readUntilAnyOfGivenMessageTags(connection, &.{Network.Protocol.Message.addr}, alloc);
     defer message.deinit(alloc);
     std.debug.assert(message == .addr);
     std.log.debug("Received {} new addresses, trying to connect...", .{message.addr.count});

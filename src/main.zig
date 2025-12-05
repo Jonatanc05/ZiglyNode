@@ -247,9 +247,9 @@ pub fn main() !void {
                     },
                     '4' => {
                         var requests_count = try Prompt.promptInt(u32, "Type how many requests for new headers to make (2000 blocks/request)", stdout, stdin, .{});
+                        try prepareOutput(stdout);
                         requests: while (requests_count > 0) : (requests_count -= 1) {
                             const result = requestBlocks(state_ptr, connection_ptr, allocator, stdout);
-                            try prepareOutput(stdout);
                             if (result) |block_count| {
                                 try stdout.print("Total blocks: {d:0>7}\n", .{state_ptr.chain.block_headers_count});
                                 if (block_count < 2000) {
@@ -274,7 +274,6 @@ pub fn main() !void {
                                     const amount_to_verify = state_ptr.chain.block_headers_count - state_ptr.chain.blocks_already_verified;
                                     const amount_to_request_now = @min(amount_to_verify, 1); // TODO Adjust max limit
                                     var result = Network.Protocol.Message.ObjectDescriptionsMessage("getdata") {
-                                        .count = amount_to_request_now,
                                         .inventory = try allocator.alloc(Network.Protocol.ObjectDescription, amount_to_request_now),
                                     };
 
@@ -290,7 +289,17 @@ pub fn main() !void {
                             }
                         );
                         const msg = try Network.Node.readUntilAnyOfGivenMessageTags(connection_ptr, &.{Network.Protocol.Message.block, Network.Protocol.Message.notfound}, allocator);
-                        std.debug.print("block msg: {any}\n", .{msg});
+                        defer msg.deinit(allocator);
+                        switch (msg) {
+                            .block => |block_msg| {
+
+                            },
+                            .notfound => |notfound_msg| {
+                                try stdout.print("Data not found:\n", .{});
+                                for (notfound_msg.inventory) |inv_item|
+                                    try stdout.print("  - {s}: {x}\n", .{ @tagName(inv_item.@"type"), inv_item.hash });
+                            },
+                        }
                     },
                     else => continue,
                 }

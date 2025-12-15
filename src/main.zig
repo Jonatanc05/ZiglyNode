@@ -8,7 +8,7 @@ const Blockchain = @import("blockchain.zig");
 const Address = std.net.Address;
 
 pub const std_options = std.Options{
-    .log_level = .info,
+    .log_level = .debug,
 };
 
 const app_name = "ZiglyNode";
@@ -202,12 +202,14 @@ pub fn main() !void {
                 std.debug.assert(max_connections < 10); // Based on this premise we assume 3 character input: 'i', ' ' and 'X' as single-digit number
                 const trimmed = std.mem.trimRight(u8, input, &.{ ' ', '\r', '\n' });
                 if (trimmed.len != 3 or trimmed[1] != ' ' or trimmed[2] < '1' or trimmed[2] > '9') {
+                    try prepareOutput(stdout);
                     try stdout.print("Not sure what you mean... try like 'i 1'\n", .{});
                     break :outerswitch;
                 }
 
                 const peer_id = (try std.fmt.charToDigit(trimmed[2], 10)) - 1;
                 if (!state_ptr.connections[peer_id].alive) {
+                    try prepareOutput(stdout);
                     try stdout.print("That's not a valid peer id\n", .{});
                     break :outerswitch;
                 }
@@ -247,6 +249,7 @@ pub fn main() !void {
                     },
                     '4' => {
                         var requests_count = try Prompt.promptInt(u32, "Type how many requests for new headers to make (2000 blocks/request)", stdout, stdin, .{});
+                        try prepareOutput(stdout);
                         requests: while (requests_count > 0) : (requests_count -= 1) {
                             const result = requestBlocks(state_ptr, connection_ptr, allocator, stdout);
                             try prepareOutput(stdout);
@@ -274,7 +277,6 @@ pub fn main() !void {
                                     const amount_to_verify = state_ptr.chain.block_headers_count - state_ptr.chain.blocks_already_verified;
                                     const amount_to_request_now = @min(amount_to_verify, 1); // TODO Adjust max limit
                                     var result = Network.Protocol.Message.ObjectDescriptionsMessage("getdata") {
-                                        .count = amount_to_request_now,
                                         .inventory = try allocator.alloc(Network.Protocol.ObjectDescription, amount_to_request_now),
                                     };
 
@@ -289,8 +291,26 @@ pub fn main() !void {
                                 },
                             }
                         );
-                        const msg = try Network.Node.readUntilAnyOfGivenMessageTags(connection_ptr, &.{Network.Protocol.Message.block, Network.Protocol.Message.notfound}, allocator);
-                        std.debug.print("block msg: {any}\n", .{msg});
+                        const msg = Network.Node.readUntilAnyOfGivenMessageTags(
+                            connection_ptr,
+                            &.{Network.Protocol.Message.block, Network.Protocol.Message.notfound},
+                            allocator
+                        ) catch |err| {
+                            std.log.err("error: {s}\n", .{ @errorName(err) });
+                            continue;
+                        };
+                        defer msg.deinit(allocator);
+                        switch (msg) {
+                            .block => |block_data| {
+                                try stdout.print("Block header: {any}\n", .{block_data.header});
+                            },
+                            .notfound => |notfound_msg| {
+                                try stdout.print("Data not found:\n", .{});
+                                for (notfound_msg.inventory) |inv_item|
+                                    try stdout.print("  - {s}: {x}\n", .{ @tagName(inv_item.@"type"), inv_item.hash });
+                            },
+                            else => unreachable,
+                        }
                     },
                     else => continue,
                 }

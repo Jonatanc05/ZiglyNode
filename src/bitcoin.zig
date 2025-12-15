@@ -847,15 +847,15 @@ pub const Block = struct {
     }
 
     /// Resulting bytes on `buffer` should be read as big-endian. `buffer` should have at least 32 bytes
-    pub fn hash(self: *const Block, buffer: []u8) void {
-        std.debug.assert(buffer.len >= 32);
+    pub fn hash(self: *const Block, output_buffer: []u8) void {
+        std.debug.assert(output_buffer.len >= 32);
         var block_buffer: [80]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&block_buffer);
         self.serialize(&writer) catch unreachable;
         var intermediate_buffer1: [32]u8 = undefined;
         Sha256.hash(&block_buffer, intermediate_buffer1[0..32], .{});
-        Sha256.hash(intermediate_buffer1[0..32], buffer[0..32], .{});
-        mem.reverse(u8, buffer[0..32]);
+        Sha256.hash(intermediate_buffer1[0..32], output_buffer[0..32], .{});
+        mem.reverse(u8, output_buffer[0..32]);
     }
 
     pub fn bitsToTarget(bits: u32) u256 {

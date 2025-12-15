@@ -20,7 +20,7 @@ fn u32ipv4_as_ipv6(ipv4: u32) [16]u8 {
 
 /// Low level protocol implementation
 pub const Protocol = struct {
-    pub const current_version = 60002;
+    pub const current_version = 70015;
 
     const magic_mainnet = 0xf9beb4d9;
     const magic_testnet = 0x0b110907;
@@ -128,6 +128,7 @@ pub const Protocol = struct {
                 return result;
             }
         },
+        /// Important: https://developer.bitcoin.org/reference/p2p_networking.html#getdata
         getdata: ObjectDescriptionsMessage("getdata"),
         getheaders: struct {
             version: i32 = current_version,
@@ -384,12 +385,11 @@ pub const Protocol = struct {
 
         pub fn ObjectDescriptionsMessage(comptime tag_name: []const u8) type {
             return struct {
-                /// VarInt on wire
-                count: u32,
+                /// length serializes as VarInt
                 inventory: []ObjectDescription,
 
                 pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
-                    try writeMyVarInt(writer, self.count, .little);
+                    try writeMyVarInt(writer, @intCast(self.inventory.len), .little);
                     for (self.inventory) |inv_item| {
                         try writer.writeInt(u32, @intFromEnum(inv_item.@"type"), .little);
                         try writer.writeInt(u256, inv_item.hash, .little);
@@ -399,8 +399,8 @@ pub const Protocol = struct {
                 pub fn parse(reader: *std.Io.Reader, alloc: std.mem.Allocator) anyerror!Message {
                     var result = @unionInit(Message, tag_name, undefined);
                     var union_payload: *@This() = &@field(result, tag_name);
-                    union_payload.count = try takeMyVarInt(reader, .little);
-                    union_payload.inventory = try alloc.alloc(ObjectDescription, @intCast(union_payload.count));
+                    const count = try takeMyVarInt(reader, .little);
+                    union_payload.inventory = try alloc.alloc(ObjectDescription, @intCast(count));
 
                     for (union_payload.inventory) |*inv_item| {
                         inv_item.@"type" = @enumFromInt(try reader.takeInt(u32, .little));
@@ -723,12 +723,12 @@ pub const Node = struct {
 
     /// Caller should call .deinit() on returned value. We might have evented messages in the future
     pub fn readUntilAnyOfGivenMessageTags(connection: *const Connection, comptime tags: []const @typeInfo(Protocol.Message).@"union".tag_type.?, alloc: std.mem.Allocator) !Protocol.Message {
-        message_loop: while (true) {
+        while (true) {
             if (readMessage(connection, alloc)) |msg| {
                 inline for (tags) |tag| {
                     switch (msg) {
                         tag => return msg,
-                        else => continue :message_loop,
+                        else => {},
                     }
                 }
                 switch (msg) {

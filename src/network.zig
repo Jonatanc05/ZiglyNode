@@ -233,8 +233,7 @@ pub const Protocol = struct {
         verack: NoPayloadMessage("verack"),
         version: struct {
             version: i32 = current_version,
-            // @TODO make it BIP159 compliant (https://github.com/bitcoin/bips/blob/master/bip-0159.mediawiki)
-            services: u64 = 0,
+            services: u64 = ServicesFlags.NODE_NETWORK_LIMITED,
             timestamp: i64,
             receiver_services: u64 = 0,
             receiver_ip: [16]u8 = [1]u8{0} ** 16,
@@ -246,6 +245,24 @@ pub const Protocol = struct {
             user_agent: []const u8,
             start_height: i32 = 0,
             relay: bool = false,
+
+            /// Feature flags on `services` to know what to expect from peer
+            pub const ServicesFlags = struct {
+                /// This node can be asked for full blocks
+                pub const NODE_NETWORK         = 0b00000000001;
+                /// See BIP 0064 https://github.com/bitcoin/bips/blob/master/bip-0064.mediawiki
+                pub const NODE_GETUTXO         = 0b00000000010;
+                /// See BIP 0111 https://github.com/bitcoin/bips/blob/master/bip-0111.mediawiki
+                pub const NODE_BLOOM           = 0b00000000100;
+                /// See BIP 0144 https://github.com/bitcoin/bips/blob/master/bip-0144.mediawiki
+                pub const NODE_WITNESS         = 0b00000001000;
+                /// Old and discontinued
+                pub const NODE_XTHIN           = 0b00000010000;
+                /// See BIP 0157 https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki
+                pub const NODE_COMPACT_FILTERS = 0b00001000000;
+                /// See BIP 0159 https://github.com/bitcoin/bips/blob/master/bip-0159.mediawiki
+                pub const NODE_NETWORK_LIMITED = 0b10000000000;
+            };
 
             pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
                 try writer.writeInt(i32, self.version, .little);

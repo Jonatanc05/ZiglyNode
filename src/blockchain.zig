@@ -24,7 +24,7 @@ pub const State = struct {
     block_headers: []Bitcoin.Block,
     /// Includes genesis block on the count
     block_headers_count: u32,
-    /// We currently only support validating sequentially
+    // We currently only support validating sequentially
     blocks_already_verified: u32,
 
     pub fn init(alloc: std.mem.Allocator) !State {
@@ -95,8 +95,6 @@ pub const State = struct {
 
     pub fn serialize(self: *State, writer: *std.Io.Writer) !void {
         try writer.writeInt(u32, self.block_headers_count, .little);
-        // TODO I think this flush is residual from a debugging session. Try removing
-        try writer.flush();
 
         // Save blocks excluding genesis block (which has index 0)
         if (self.block_headers_count > 1) {

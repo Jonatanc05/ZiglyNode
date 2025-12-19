@@ -196,6 +196,23 @@ pub fn main() !void {
                 defer allocator.free(bytes);
                 try stdout.print("\nSigned transaction:\n{x}\n", .{bytes});
                 try stdout.print("\nYou can verifiy the transaction contents using the command `bitcoin tx -json <hex>`\n", .{});
+                const advertise = try Prompt.promptBool("Advertise transaction to network?\n", stdout, stdin);
+                if (advertise) {
+                    for (&state_ptr.connections) |conn| {
+                        if (!conn.alive) continue;
+                        const payload = try allocator.alloc(Network.Protocol.ObjectDescription, 1);
+                        defer allocator.free(payload);
+                        payload[0] = Network.Protocol.ObjectDescription{
+                            .@"type" = .MSG_TX,
+                            .hash = 0x0,
+                        };
+                        try Network.Node.sendMessage(&conn.data,
+                            Network.Protocol.Message{
+                                .inv = .{ .inventory = payload }
+                            }
+                        );
+                    }
+                }
             },
             '5' => break,
             'i' => {

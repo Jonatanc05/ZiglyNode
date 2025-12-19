@@ -261,7 +261,7 @@ pub const Tx = struct {
         const hashtype = 0x01;
         const z = try self.hashForSigning(input_index, hashtype, prev_script_pubkey, alloc);
 
-        // @TODO does not satisfy full BIP141 specification
+        // TODO witness implementation does not satisfy full BIP141 specification yet
         const is_witness = for (self.outputs) |o| {
             if (o.script_pubkey.len >= 4 and o.script_pubkey.len <= 42 and o.script_pubkey[0] == 0) {
                 break true;

@@ -3,8 +3,6 @@ const net = std.net;
 const assert = std.debug.assert;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const is_windows = @import("builtin").os.tag == .windows;
-const takeMyVarInt = @import("util.zig").takeMyVarInt;
-const writeMyVarInt = @import("util.zig").writeMyVarInt;
 
 // managed dependencies
 const Bitcoin = @import("bitcoin.zig");
@@ -40,7 +38,7 @@ pub const Protocol = struct {
             addr_array: []Addr,
 
             pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
-                try Util.writeMyVarInt(writer, self.count, .little);
+                try Util.writeVarInt(writer, self.count, .little);
                 for (self.addr_array) |addr| {
                     try writer.writeInt(u32, addr.time, .little);
                     try writer.writeInt(u64, addr.services, .little);
@@ -52,7 +50,7 @@ pub const Protocol = struct {
             pub fn parse(reader: *std.Io.Reader, alloc: std.mem.Allocator) anyerror!Message {
                 var res: Message = .{ .addr = undefined };
 
-                res.addr.count = try takeMyVarInt(reader, .little);
+                res.addr.count = try Util.takeVarInt(reader, .little);
                 res.addr.addr_array = try alloc.alloc(Protocol.Addr, @intCast(res.addr.count));
                 for (res.addr.addr_array) |*addr| {
                     addr.time = try reader.takeInt(u32, .little);
@@ -74,7 +72,7 @@ pub const Protocol = struct {
 
             pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
                 try self.header.serialize(writer);
-                try Util.writeMyVarInt(writer, @intCast(self.txs.len), .little);
+                try Util.writeVarInt(writer, @intCast(self.txs.len), .little);
                 for (self.txs) |tx| {
                     try tx.serialize(writer);
                 }
@@ -89,7 +87,7 @@ pub const Protocol = struct {
                 };
 
                 result.block.header = Bitcoin.Block.parse(reader);
-                const txs_len = try Util.takeMyVarInt(reader, .little);
+                const txs_len = try Util.takeVarInt(reader, .little);
                 result.block.txs = try alloc.alloc(Bitcoin.Tx, txs_len);
                 for (result.block.txs) |*tx| {
                     tx.* = try Bitcoin.Tx.parse(reader, alloc);
@@ -111,7 +109,7 @@ pub const Protocol = struct {
 
             pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
                 try writer.writeInt(i32, self.version, .little);
-                try Util.writeMyVarInt(writer, self.hash_count, .little);
+                try Util.writeVarInt(writer, self.hash_count, .little);
                 try writer.writeInt(u256, self.block_locator, .little);
                 try writer.writeInt(u256, self.hash_stop, .little);
             }
@@ -121,7 +119,7 @@ pub const Protocol = struct {
                 var result = Message{ .getblocks = undefined };
 
                 result.getblocks.version = try reader.takeInt(i32, .little);
-                result.getblocks.hash_count = try takeMyVarInt(reader, .little);
+                result.getblocks.hash_count = try Util.takeVarInt(reader, .little);
                 result.getblocks.block_locator = try reader.takeInt(u256, .little);
                 result.getblocks.hash_stop = try reader.takeInt(u256, .little);
 
@@ -139,7 +137,7 @@ pub const Protocol = struct {
 
             pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
                 try writer.writeInt(i32, self.version, .little);
-                try Util.writeMyVarInt(writer, self.hash_count, .little);
+                try Util.writeVarInt(writer, self.hash_count, .little);
                 try writer.writeInt(u256, self.hash_start_block, .little);
                 try writer.writeInt(u256, self.hash_final_block, .little);
             }
@@ -149,7 +147,7 @@ pub const Protocol = struct {
                 var result = Message{ .getheaders = undefined };
 
                 result.getheaders.version = try reader.takeInt(i32, .little);
-                result.getheaders.hash_count = try takeMyVarInt(reader, .little);
+                result.getheaders.hash_count = try Util.takeVarInt(reader, .little);
                 result.getheaders.hash_start_block = try reader.takeInt(u256, .little);
                 result.getheaders.hash_final_block = try reader.takeInt(u256, .little);
 
@@ -160,7 +158,7 @@ pub const Protocol = struct {
             data: []Bitcoin.Block,
 
             pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
-                try Util.writeMyVarInt(writer, @intCast(self.data.len), .little);
+                try Util.writeVarInt(writer, @intCast(self.data.len), .little);
                 for (self.data) |block| {
                     var buffer: [80]u8 = undefined;
                     var bwriter: std.Io.Writer = .fixed(&buffer);
@@ -171,7 +169,7 @@ pub const Protocol = struct {
             }
 
             pub fn parse(reader: *std.Io.Reader, alloc: std.mem.Allocator) anyerror!Message {
-                const count = try takeMyVarInt(reader, .little);
+                const count = try Util.takeVarInt(reader, .little);
                 const blocks = try alloc.alloc(Bitcoin.Block, count);
                 for (blocks) |*block| {
                     block.* = Bitcoin.Block.parse(reader);
@@ -245,24 +243,6 @@ pub const Protocol = struct {
             user_agent: []const u8,
             start_height: i32 = 0,
             relay: bool = false,
-
-            /// Feature flags on `services` to know what to expect from peer
-            pub const ServicesFlags = struct {
-                /// This node can be asked for full blocks
-                pub const NODE_NETWORK         = 0b00000000001;
-                /// See BIP 0064 https://github.com/bitcoin/bips/blob/master/bip-0064.mediawiki
-                pub const NODE_GETUTXO         = 0b00000000010;
-                /// See BIP 0111 https://github.com/bitcoin/bips/blob/master/bip-0111.mediawiki
-                pub const NODE_BLOOM           = 0b00000000100;
-                /// See BIP 0144 https://github.com/bitcoin/bips/blob/master/bip-0144.mediawiki
-                pub const NODE_WITNESS         = 0b00000001000;
-                /// Old and discontinued
-                pub const NODE_XTHIN           = 0b00000010000;
-                /// See BIP 0157 https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki
-                pub const NODE_COMPACT_FILTERS = 0b00001000000;
-                /// See BIP 0159 https://github.com/bitcoin/bips/blob/master/bip-0159.mediawiki
-                pub const NODE_NETWORK_LIMITED = 0b10000000000;
-            };
 
             pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
                 try writer.writeInt(i32, self.version, .little);
@@ -406,7 +386,7 @@ pub const Protocol = struct {
                 inventory: []ObjectDescription,
 
                 pub fn serialize(self: @This(), writer: *std.Io.Writer) anyerror!void {
-                    try writeMyVarInt(writer, @intCast(self.inventory.len), .little);
+                    try Util.writeVarInt(writer, @intCast(self.inventory.len), .little);
                     for (self.inventory) |inv_item| {
                         try writer.writeInt(u32, @intFromEnum(inv_item.@"type"), .little);
                         try writer.writeInt(u256, inv_item.hash, .little);
@@ -416,7 +396,7 @@ pub const Protocol = struct {
                 pub fn parse(reader: *std.Io.Reader, alloc: std.mem.Allocator) anyerror!Message {
                     var result = @unionInit(Message, tag_name, undefined);
                     var union_payload: *@This() = &@field(result, tag_name);
-                    const count = try takeMyVarInt(reader, .little);
+                    const count = try Util.takeVarInt(reader, .little);
                     union_payload.inventory = try alloc.alloc(ObjectDescription, @intCast(count));
 
                     for (union_payload.inventory) |*inv_item| {
@@ -540,6 +520,24 @@ pub const Protocol = struct {
         MSG_FILTERED_WITNESS_BLOCK = 0x40000003,
     };
 
+    /// Feature flags on `services` to know what to expect from peer
+    pub const ServicesFlags = struct {
+        /// This node can be asked for full blocks
+        pub const NODE_NETWORK         = 0b00000000001;
+        /// See BIP 0064 https://github.com/bitcoin/bips/blob/master/bip-0064.mediawiki
+        pub const NODE_GETUTXO         = 0b00000000010;
+        /// See BIP 0111 https://github.com/bitcoin/bips/blob/master/bip-0111.mediawiki
+        pub const NODE_BLOOM           = 0b00000000100;
+        /// See BIP 0144 https://github.com/bitcoin/bips/blob/master/bip-0144.mediawiki
+        pub const NODE_WITNESS         = 0b00000001000;
+        /// Old and discontinued
+        pub const NODE_XTHIN           = 0b00000010000;
+        /// See BIP 0157 https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki
+        pub const NODE_COMPACT_FILTERS = 0b00001000000;
+        /// See BIP 0159 https://github.com/bitcoin/bips/blob/master/bip-0159.mediawiki
+        pub const NODE_NETWORK_LIMITED = 0b10000000000;
+    };
+
 
     pub fn checksum(bytes: []u8) [4]u8 {
         var hash: [32]u8 = undefined;
@@ -557,6 +555,10 @@ pub const Node = struct {
         stream: net.Stream,
         handshaked: bool,
         user_agent: [30]u8,
+
+        pub fn isFullArchivalNode(self: *const Connection) bool {
+            return (self.peer_version & Protocol.ServicesFlags.NODE_NETWORK) > 0;
+        }
     };
 
     /// This function blocks current thread for, at most, `timeout_seconds`

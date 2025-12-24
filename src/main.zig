@@ -105,6 +105,8 @@ pub fn main() !void {
         };
     }
 
+    const initial_block_header_count = state_ptr.chain.block_headers_count;
+
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
     var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
@@ -117,15 +119,7 @@ pub fn main() !void {
         try stdout.print("# Hello dear hodler, tell me what to do        #\n", .{});
         try stdout.print("#   1. View blockchain state                   #\n", .{});
         try stdout.print("#   2. Connect to a new peer                   #\n", .{});
-        try stdout.print("#   3. List peers ({d})                          #\n",
-            .{ active_connections_count: {
-                var count: u32 = 0;
-                for (state_ptr.connections) |c| {
-                    count += if (c.alive) 1 else 0;
-                }
-                break :active_connections_count count;
-            }
-        });
+        try stdout.print("#   3. List peers ({d})                          #\n", .{state_ptr.active_connections});
         try stdout.print("#   4. Sign a transaction                      #\n", .{});
         try stdout.print("#   5. Exit                                    #\n", .{});
         try stdout.print("#                                              #\n", .{});
@@ -236,8 +230,7 @@ pub fn main() !void {
                 try stdout.print("1. disconnect from peer\n", .{});
                 try stdout.print("2. ask for new peers and connect \n", .{});
                 try stdout.print("3. ask for block headers\n", .{});
-                try stdout.print("4. ask for many block headers\n", .{});
-                try stdout.print("5. ask for entire blocks\n", .{});
+                try stdout.print("4. ask for entire blocks\n", .{});
                 const action = try stdin.takeDelimiterExclusive('\n');
                 std.debug.assert(try stdin.discardShort(1) == 1);
                 switch (action[0]) {
@@ -257,21 +250,12 @@ pub fn main() !void {
                         for (pool.threads) |thr| thr.detach();
                     },
                     '3' => {
-                        const result = requestBlocks(state_ptr, connection_ptr, allocator, stdout);
-                        if (result) |block_count| {
-                            try stdout.print("{d} new blocks received!\n", .{block_count});
-                        } else |err| {
-                            try stdout.print("Could not request blocks: {t}", .{err});
-                        }
-                    },
-                    '4' => {
-                        var requests_count = try Prompt.promptInt(u32, "Type how many requests for new headers to make (2000 blocks/request)", stdout, stdin, .{});
+                        var requests_count = try Prompt.promptInt(u32, "How many requests to send (2000 blocks/request)", stdout, stdin, .{ .default_value = 1 });
                         try prepareOutput(stdout);
                         requests: while (requests_count > 0) : (requests_count -= 1) {
                             const result = requestBlocks(state_ptr, connection_ptr, allocator, stdout);
-                            try prepareOutput(stdout);
                             if (result) |block_count| {
-                                try stdout.print("Total blocks: {d:0>7}\n", .{state_ptr.chain.block_headers_count});
+                                try stdout.print("Blocks received. Total blocks: {d:0>7}\n", .{state_ptr.chain.block_headers_count});
                                 if (block_count < 2000) {
                                     try stdout.print("Less than 2000 blocks received, assume end", .{}); // Obviously broken
                                     break :requests;
@@ -282,7 +266,12 @@ pub fn main() !void {
                             }
                         }
                     },
-                    '5' => {
+                    '4' => {
+                        if (!connection_ptr.isFullArchivalNode()) {
+                            try prepareOutput(stdout);
+                            try stdout.print("This peer isn't a full-archival node and can't be asked for entire blocks\n", .{});
+                            break :outerswitch;
+                        }
                         try Network.Node.sendMessage(connection_ptr,
                             Network.Protocol.Message{
                                 .getdata = payload_with_hashes_of_blocks_being_requested: {
@@ -339,21 +328,23 @@ pub fn main() !void {
         }
     }
 
-    std.log.info("saving data on disk...", .{});
+    if (state_ptr.chain.block_headers_count != initial_block_header_count) {
+        std.log.info("saving data on disk...", .{});
 
-    write_blockheaders_to_disk: {
-        const blockheaders_file = openAppFile(allocator, blockheaders_filename, true) catch |err| {
-            std.log.err("could not create {s}: {t}", .{ blockheaders_filename, err });
-            break :write_blockheaders_to_disk;
-        };
-        defer blockheaders_file.close();
+        write_blockheaders_to_disk: {
+            const blockheaders_file = openAppFile(allocator, blockheaders_filename, true) catch |err| {
+                std.log.err("could not create {s}: {t}", .{ blockheaders_filename, err });
+                break :write_blockheaders_to_disk;
+            };
+            defer blockheaders_file.close();
 
-        var buf: [@sizeOf(Bitcoin.Block)]u8 = undefined;
-        var writer = blockheaders_file.writer(&buf);
-        state_ptr.chain.serialize(&writer.interface) catch |err| {
-            std.log.err("failed to write blocks to {s}: {t}", .{ blockheaders_filename, err });
-            break :write_blockheaders_to_disk;
-        };
+            var buf: [@sizeOf(Bitcoin.Block)]u8 = undefined;
+            var writer = blockheaders_file.writer(&buf);
+            state_ptr.chain.serialize(&writer.interface) catch |err| {
+                std.log.err("failed to write blocks to {s}: {t}", .{ blockheaders_filename, err });
+                break :write_blockheaders_to_disk;
+            };
+        }
     }
 }
 

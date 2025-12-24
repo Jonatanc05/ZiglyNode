@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn takeMyVarInt(reader: *std.Io.Reader, endian: std.builtin.Endian) !u32 {
+pub fn takeVarInt(reader: *std.Io.Reader, endian: std.builtin.Endian) !u32 {
     const first_byte = try reader.takeInt(u8, endian);
     return switch (first_byte) {
         else => @intCast(first_byte),
@@ -10,7 +10,7 @@ pub fn takeMyVarInt(reader: *std.Io.Reader, endian: std.builtin.Endian) !u32 {
     };
 }
 
-pub fn writeMyVarInt(stream: *std.Io.Writer, value: u32, endian: std.builtin.Endian) error{WriteFailed}!void {
+pub fn writeVarInt(stream: *std.Io.Writer, value: u32, endian: std.builtin.Endian) error{WriteFailed}!void {
     switch (value) {
         0...0xfc => {
             try stream.writeInt(u8, @intCast(value), endian);

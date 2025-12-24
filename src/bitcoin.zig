@@ -327,26 +327,26 @@ pub const Tx = struct {
             try writer.writeByte(1);
         }
 
-        try Util.writeMyVarInt(writer, @intCast(self.inputs.len), .little);
+        try Util.writeVarInt(writer, @intCast(self.inputs.len), .little);
         for (self.inputs) |input| {
             try writer.writeInt(u256, input.txid, .little);
             try writer.writeInt(u32, input.index, .little);
-            try Util.writeMyVarInt(writer, @intCast(input.script_sig.len), .little);
+            try Util.writeVarInt(writer, @intCast(input.script_sig.len), .little);
             try writer.writeAll(input.script_sig);
             try writer.writeInt(u32, input.sequence, .little);
         }
 
-        try Util.writeMyVarInt(writer, @intCast(self.outputs.len), .little);
+        try Util.writeVarInt(writer, @intCast(self.outputs.len), .little);
         for (self.outputs) |output| {
             try writer.writeInt(u64, output.amount, .little);
-            try Util.writeMyVarInt(writer, @intCast(output.script_pubkey.len), .little);
+            try Util.writeVarInt(writer, @intCast(output.script_pubkey.len), .little);
             try writer.writeAll(output.script_pubkey);
         }
 
         if (self.witness) |witness| {
-            try Util.writeMyVarInt(writer, @intCast(witness.len), .little);
+            try Util.writeVarInt(writer, @intCast(witness.len), .little);
             for (witness) |item| {
-                try Util.writeMyVarInt(writer, @intCast(item.len), .little);
+                try Util.writeVarInt(writer, @intCast(item.len), .little);
                 try writer.writeAll(item);
             }
         } else {
@@ -364,18 +364,18 @@ pub const Tx = struct {
         tx.version = try reader.takeInt(u32, .little);
 
         tx.inputs = inputs: {
-            var n_inputs = try Util.takeMyVarInt(reader, .little);
+            var n_inputs = try Util.takeVarInt(reader, .little);
             if (n_inputs == 0) { // witness marker
                 is_witness = true;
                 assert(try reader.takeInt(u8, .little) == 1); // witness flag
-                n_inputs = try Util.takeMyVarInt(reader, .little);
+                n_inputs = try Util.takeVarInt(reader, .little);
             }
             const inputs = try alloc.alloc(TxInput, n_inputs);
             for (inputs) |*input| {
                 input.txid = try reader.takeInt(u256, .little);
                 input.index = try reader.takeInt(u32, .little);
                 input.script_sig = script_sig: {
-                    const script_sig_len = try Util.takeMyVarInt(reader, .little);
+                    const script_sig_len = try Util.takeVarInt(reader, .little);
                     const script_sig = try reader.take(@intCast(script_sig_len));
                     break :script_sig try alloc.dupe(u8, script_sig);
                 };
@@ -385,12 +385,12 @@ pub const Tx = struct {
         };
 
         tx.outputs = outputs: {
-            const n_outputs = try Util.takeMyVarInt(reader, .little);
+            const n_outputs = try Util.takeVarInt(reader, .little);
             const outputs = try alloc.alloc(TxOutput, n_outputs);
             for (outputs) |*output| {
                 output.amount = try reader.takeInt(u64, .little);
                 output.script_pubkey = script_pubkey: {
-                    const script_pubkey_len = try Util.takeMyVarInt(reader, .little);
+                    const script_pubkey_len = try Util.takeVarInt(reader, .little);
                     const script_pubkey = try reader.take(script_pubkey_len);
                     break :script_pubkey try alloc.dupe(u8, script_pubkey);
                 };
@@ -401,10 +401,10 @@ pub const Tx = struct {
         tx.witness = witness: {
             if (!is_witness) break :witness null;
 
-            const n_items = try Util.takeMyVarInt(reader, .little);
+            const n_items = try Util.takeVarInt(reader, .little);
             const temp_witness = try alloc.alloc([]u8, n_items);
             for (0..n_items) |i| {
-                const witness_read_len = try Util.takeMyVarInt(reader, .little);
+                const witness_read_len = try Util.takeVarInt(reader, .little);
                 const witness_read = try reader.take(witness_read_len);
                 temp_witness[i] = try alloc.alloc(u8, witness_read_len);
                 std.mem.copyForwards( u8, temp_witness[i], witness_read);

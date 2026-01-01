@@ -1,0 +1,12 @@
+.{
+    .name = .ZiglyNode,
+    .version = "0.15.2",
+    .dependencies = .{
+        .sdl3 = .{
+            .url = "git+https://github.com/Gota7/zig-sdl3?ref=v0.1.5#014b7bcb2899f3ed9c945c4abfcfe1b25d75bfeb",
+            .hash = "sdl3-0.1.5-NmT1QxARJgAH1Wp0cMBJDAc9vD7weufTkIwVa5rehA2q",
+        },
+    },
+    .paths = .{""},
+    .fingerprint = 0xf3dc3459ac939fb,
+}

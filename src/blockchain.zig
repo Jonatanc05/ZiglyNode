@@ -95,7 +95,7 @@ pub const State = struct {
         self.latest_block_header = std.mem.readInt(u256, &buf, .big);
     }
 
-    pub fn serialize(self: *State, writer: *std.Io.Writer) !void {
+    pub fn serialize(self: *const State, writer: *std.Io.Writer) !void {
         try writer.writeInt(u32, self.block_headers_count, .little);
 
         // Save blocks excluding genesis block (which has index 0)

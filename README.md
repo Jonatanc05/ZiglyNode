@@ -149,21 +149,3 @@ info: saving data on disk...
 
 ```
 
-
-## TODO
-
-- [ ] Networking improvements
-  - [x] Concurrent connect calls
-  - [ ] Consume next address immediately after a connection fails (not sure)
-- [x] Check difficulty when receiving block headers
-- [x] Headers IBD
-- [ ] SPV
-- [ ] P2SH
-- [ ] SegWit
-- [ ] Full IBD with sparse pruning?
-
-Issues:
-- [ ] We can't seem to receive blocks from `/Satoshi:25.1.0/`
-  - Minimum version we know that works is `/Satoshi:27.0.0/`
-  - Actually it might not be about version? `/Satoshi:25.0.0/` can work
-

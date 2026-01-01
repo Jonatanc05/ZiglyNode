@@ -12,7 +12,8 @@ pub const std_options = std.Options{
 };
 
 const app_name = "ZiglyNode";
-const blockheaders_filename = "blockheaders.dat";
+const blockheaders_filename_mainnet = "blockheaders.dat";
+const blockheaders_filename_signet = "blockheaders_signet.dat";
 const max_connections = 8;
 /// This value might change
 const max_concurrent_tasks = max_connections;
@@ -20,6 +21,13 @@ const connection_timeout_seconds = 5;
 comptime {
     // logic for `i 2` depends on that
     std.debug.assert(max_connections < 10);
+}
+
+fn getBlockheadersFilename(state: *const State) []const u8 {
+    switch (state.chain.network) {
+        .mainnet => return blockheaders_filename_mainnet,
+        .signet => return blockheaders_filename_signet,
+    }
 }
 
 const State = struct {
@@ -56,18 +64,18 @@ pub fn main() !void {
 
     state_ptr.active_connections = 0;
     state_ptr.privkey = privkey: {
-        // Maybe use openAppFile later
         const filename = ".privkey";
-        var resulting_file: std.fs.File = std.fs.cwd().openFile(filename, .{}) catch |err| switch (err) {
+        var resulting_file = openAppFile(allocator, filename, .{}) catch |err| switch(err) {
             error.FileNotFound => blk: {
                 std.log.info("couldn't find {s} file, creating...", .{filename});
-                const file = try std.fs.cwd().createFile(filename, .{ .read = true });
+                const filepath = try getAppFileAbsolutePath(allocator, filename);
+                const file = try std.fs.createFileAbsolute(filepath, .{ .read = true });
                 try file.writeAll("0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a");
                 try file.sync();
                 try file.seekTo(0);
                 break :blk file;
             },
-            else => unreachable,
+            else => return err,
         };
         defer resulting_file.close();
         var buf: [64]u8 = undefined;
@@ -77,7 +85,7 @@ pub fn main() !void {
     };
     state_ptr.address = addr: {
         var addr_buf: [40]u8 = undefined;
-        const address = Bitcoin.Address.fromPrivkey(state_ptr.privkey, true, &addr_buf);
+        const address = Bitcoin.Address.fromPrivkey(state_ptr.privkey, Blockchain.isTestnet(state_ptr.chain.network), &addr_buf);
         break :addr try allocator.dupe(u8, address);
     };
     defer allocator.free(state_ptr.address);
@@ -87,8 +95,20 @@ pub fn main() !void {
     state_ptr.chain = try Blockchain.State.init(allocator);
     defer state_ptr.chain.deinit(allocator);
 
+    state_ptr.chain.network = blk: {
+        const args = try std.process.argsAlloc(allocator);
+        defer std.process.argsFree(allocator, args);
+        for (args) |arg| {
+            if (std.mem.eql(u8, arg, "--signet"))
+                break :blk .signet;
+        }
+        break :blk .mainnet;
+    };
+
+    const blockheaders_filename = getBlockheadersFilename(state_ptr);
+
     read_blockheaders_from_disk: {
-        const blockheaders_file = openAppFile(allocator, blockheaders_filename, false) catch |err| switch(err) {
+        const blockheaders_file = openAppFile(allocator, blockheaders_filename, .{}) catch |err| switch(err) {
             error.FileNotFound => {
                 std.log.warn("could not find existing {s}", .{blockheaders_filename});
                 break :read_blockheaders_from_disk;
@@ -100,7 +120,7 @@ pub fn main() !void {
         var buf: [@sizeOf(Bitcoin.Block)]u8 = undefined;
         var reader = blockheaders_file.reader(&buf);
         state_ptr.chain.parse(&reader.interface) catch {
-            std.log.err("The {s} file is corrupt (or from previous ZiglyNode versions)... fix or delete it before proceeding", .{blockheaders_filename});
+            std.log.err("The {s} file is corrupt (or from incompatible ZiglyNode versions)... fix or delete it before proceeding", .{blockheaders_filename});
             return error.BlockheadersFileCorrupt;
         };
     }
@@ -112,6 +132,7 @@ pub fn main() !void {
     var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
     const stdin = &stdin_reader.interface;
 
+    try prepareOutput(stdout);
     try stdout.print("\nYour address is {s}\n", .{state_ptr.address});
     while (true) {
         try stdout.print("\n################################################\n", .{});
@@ -175,7 +196,7 @@ pub fn main() !void {
                 try stdout.print("\nType 'i' followed by a number to interact with a peer (ex.: 'i 2')\n", .{});
             },
             '4' => {
-                var tx = try promptTransaction(allocator, stdout, stdin);
+                var tx = try promptTransaction(allocator, stdout, stdin, Blockchain.isTestnet(state_ptr.chain.network));
                 defer tx.deinit(allocator);
                 const input_index = 0;
                 const prev_pubkey = try Prompt.promptBytesHex("Previous pubkey script (25 bytes for P2PKH)", stdout, stdin);
@@ -243,6 +264,7 @@ pub fn main() !void {
                         var buffer_alloc = std.heap.FixedBufferAllocator.init(&buffer);
                         var pool: Thread.Pool = undefined;
                         try pool.init(.{ .allocator = buffer_alloc.allocator() }); // no deinit cause we're using a stack buffer
+                        try prepareOutput(stdout);
                         requestNewPeers(state_ptr, connection_ptr, allocator, &pool) catch {
                             try stdout.print("Could not complete address list request to {f}\n", .{ connection_ptr.peer_address });
                         };
@@ -332,7 +354,7 @@ pub fn main() !void {
         std.log.info("saving data on disk...", .{});
 
         write_blockheaders_to_disk: {
-            const blockheaders_file = openAppFile(allocator, blockheaders_filename, true) catch |err| {
+            const blockheaders_file = openAppFile(allocator, blockheaders_filename, .{.override_existing = true}) catch |err| {
                 std.log.err("could not create {s}: {t}", .{ blockheaders_filename, err });
                 break :write_blockheaders_to_disk;
             };
@@ -349,18 +371,19 @@ pub fn main() !void {
 }
 
 fn prepareOutput(stdout: ?*std.Io.Writer) !void {
+    const out_str = [_]u8{0x1b, '[', '2', 'J', 0x1b, '[', 'H'};
+    // "\n\n\n\n\n\n\n\n\n\n"
     if (stdout) |out| {
-        try out.print("\n\n\n\n\n\n\n\n\n\n", .{});
+        try out.print(&out_str, .{});
     } else {
         var stdout_writer = std.fs.File.stdout().writer(&.{});
         const out = &stdout_writer.interface;
-        try out.print("\n\n\n\n\n\n\n\n\n\n", .{});
+        try out.print(&out_str, .{});
     }
 }
 
-fn promptTransaction(alloc: std.mem.Allocator, out: *std.Io.Writer, in: *std.Io.Reader) !Bitcoin.Tx {
+fn promptTransaction(alloc: std.mem.Allocator, out: *std.Io.Writer, in: *std.Io.Reader, testnet: bool) !Bitcoin.Tx {
     try out.print("NOTE: Only P2PKH is currently supported\n", .{});
-    const testnet = try Prompt.promptBool("Do you want to use testnet?", out, in);
     const prev_txid_bytes = try Prompt.promptBytesHex("Previous TXID (32 bytes)", out, in);
     const prev_txid = try std.fmt.parseInt(u256, prev_txid_bytes[0..64], 16);
     const prev_output_index = try Prompt.promptInt(u32, "Previous output index", out, in, .{});
@@ -564,9 +587,8 @@ fn requestNewPeers(state: *State, connection: *const Network.Node.Connection, al
     std.log.info("Connected to {d} new peers\n", .{new_connections_count});
 }
 
-const OpenAppFileError = std.fs.File.OpenError || std.fs.GetAppDataDirError;
-/// Caller is reponsible for calling `.close()` on file returned
-fn openAppFile(gpa: std.mem.Allocator, filename: []const u8, comptime override_existing: bool) OpenAppFileError!std.fs.File {
+/// Caller is responsible for freeing returned string
+fn getAppFileAbsolutePath(gpa: std.mem.Allocator, filename: []const u8) ![]u8{
     const appdata_dir = try std.fs.getAppDataDir(gpa, app_name);
     defer gpa.free(appdata_dir);
     std.fs.makeDirAbsolute(appdata_dir) catch |err| switch (err) {
@@ -574,11 +596,21 @@ fn openAppFile(gpa: std.mem.Allocator, filename: []const u8, comptime override_e
         else => std.debug.panicExtra(null, "Error calling std.fs.makeDirAbsolute(\"{s}\")", .{appdata_dir}),
     };
 
-    const filepath = try std.fmt.allocPrint(gpa, "{s}{c}{s}", .{ appdata_dir, std.fs.path.sep, filename });
+    return try std.fmt.allocPrint(gpa, "{s}{c}{s}", .{ appdata_dir, std.fs.path.sep, filename });
+}
+
+const OpenAppFileOpts = struct {
+    /// Clears current file making it empty
+    override_existing: bool = false,
+};
+const OpenAppFileError = std.fs.File.OpenError || std.fs.GetAppDataDirError;
+/// Caller is reponsible for calling `.close()` on file returned
+fn openAppFile(gpa: std.mem.Allocator, filename: []const u8, comptime opt: OpenAppFileOpts) OpenAppFileError!std.fs.File {
+    const filepath = try getAppFileAbsolutePath(gpa, filename);
     defer gpa.free(filepath);
 
     std.log.info("accessing {s}...", .{filepath});
-    if (override_existing) {
+    if (opt.override_existing) {
         return try std.fs.createFileAbsolute(filepath, .{});
     } else {
         return std.fs.openFileAbsolute(filepath, .{});

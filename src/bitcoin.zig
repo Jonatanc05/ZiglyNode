@@ -216,6 +216,11 @@ pub const Tx = struct {
         }
     }
 
+    // TODO https://learnmeabitcoin.com/technical/transaction/input/txid/
+    // pub fn txid(serialized_tx: []const u8) u256 {
+    //
+    // }
+
     fn hashForSigning(self: *const Tx, input_index: usize, hashtype: u8, prev_script_pubkey: []const u8, alloc: mem.Allocator) mem.Allocator.Error!u256 {
         var empty_script = [1]u8{0};
         const tx_copy = tx_copy: {

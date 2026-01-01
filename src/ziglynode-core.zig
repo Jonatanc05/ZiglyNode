@@ -9,18 +9,6 @@ const Address = std.net.Address;
 
 pub const app_name = "ZiglyNode";
 pub const max_connections = 8;
-
-pub fn getBlockheadersFilename(state: *const State) []const u8 {
-    switch (state.chain.network) {
-        .mainnet => return blockheaders_filename_mainnet,
-        .signet => return blockheaders_filename_signet,
-    }
-}
-
-comptime {
-    // logic for `i 2` depends on that
-    std.debug.assert(max_connections < 10);
-}
 pub const blockheaders_filename_mainnet = "blockheaders.dat";
 pub const blockheaders_filename_signet = "blockheaders_signet.dat";
 pub const max_concurrent_tasks = max_connections;
@@ -140,7 +128,6 @@ pub const State = struct {
             if (!conn.alive) break i;
         } else return error.MaximumNumberOfConnectionsReached;
     }
-
 };
 
 pub fn newConnection(state_ptr: *State, allocator: std.mem.Allocator, target_ip_address: std.net.Address) !void {
@@ -177,16 +164,16 @@ pub fn requestBlocks(state: *State, connection: *const Network.Node.Connection, 
     return blocks.len;
 }
 
-const ConnectWorkerParams = struct {
-    state: *State,
-    addr: *const Network.Protocol.Addr,
-    new_connections_count: *u32,
-    semaphore: *Thread.Semaphore,
-    alloc: std.mem.Allocator,
-};
-
 /// Locks current thread. Spawns new threads and waits for them
 pub fn requestNewPeers(state: *State, connection: *const Network.Node.Connection, alloc: std.mem.Allocator) !void {
+    const ConnectWorkerParams = struct {
+        state: *State,
+        addr: *const Network.Protocol.Addr,
+        new_connections_count: *u32,
+        semaphore: *Thread.Semaphore,
+        alloc: std.mem.Allocator,
+    };
+
     var buffer: [max_concurrent_tasks * 105]u8 = undefined; // 105 is empirical and might change
     var buffer_alloc = std.heap.FixedBufferAllocator.init(&buffer);
     var pool: Thread.Pool = undefined;
@@ -277,6 +264,81 @@ pub fn requestNewPeers(state: *State, connection: *const Network.Node.Connection
     for (0..num_tasks) |_| semaphore.wait();
 
     std.log.info("Connected to {d} new peers\n", .{new_connections_count});
+}
+
+pub fn advertiseTransaction(state_ptr: *const State, allocator: std.mem.Allocator, txid: u256) void {
+    for (&state_ptr.connections) |conn| {
+        if (!conn.alive) continue;
+        const payload = try allocator.alloc(Network.Protocol.ObjectDescription, 1);
+        defer allocator.free(payload);
+        payload[0] = Network.Protocol.ObjectDescription{
+            .@"type" = .MSG_TX,
+            .hash = txid,
+        };
+        try Network.Node.sendMessage(&conn.data,
+            Network.Protocol.Message{
+                .inv = .{ .inventory = payload }
+            }
+        );
+    }
+}
+
+/// On success, caller should deinit returned message
+pub fn requestActualBlocks(state_ptr: *const State, allocator: std.mem.Allocator, connection_ptr: *const Network.Node.Connection) !Network.Protocol.Message{
+    if (!connection_ptr.isFullArchivalNode()) {
+        std.log.err("This peer isn't a full-archival node and can't be asked for entire blocks", .{});
+        return error.NotFullArchivalNode;
+    }
+    if (state_ptr.chain.block_headers_count <= state_ptr.chain.blocks_already_verified) {
+        std.log.err("We have verified all the blocks we're aware of. Maybe try asking for new block headers?\n", .{});
+        return error.NoMoreBlocksToAsk;
+    }
+    try Network.Node.sendMessage(connection_ptr,
+        Network.Protocol.Message{
+            .getdata = payload_with_hashes_of_blocks_being_requested: {
+                const amount_to_verify = state_ptr.chain.block_headers_count - state_ptr.chain.blocks_already_verified;
+                const amount_to_request_now = @min(amount_to_verify, 1); // TODO Adjust max limit
+                var result = Network.Protocol.Message.ObjectDescriptionsMessage("getdata") {
+                    .inventory = try allocator.alloc(Network.Protocol.ObjectDescription, amount_to_request_now),
+                };
+
+                for ((&result).inventory, state_ptr.chain.blocks_already_verified..) |*inv_item, idx| {
+                    inv_item.@"type" = Network.Protocol.ObjectType.MSG_BLOCK;
+                    var buf: [32]u8 = undefined;
+                    // TODO cache theses hashes?
+                    state_ptr.chain.block_headers[idx].hash(&buf);
+                    inv_item.hash = std.mem.readInt(u256, &buf, .big);
+                }
+                break :payload_with_hashes_of_blocks_being_requested result;
+            },
+        }
+    );
+    const msg = Network.Node.readUntilAnyOfGivenMessageTags(
+        connection_ptr,
+        &.{Network.Protocol.Message.block, Network.Protocol.Message.notfound},
+        allocator
+    ) catch |err| {
+        std.log.err("error waiting for block message: {s}", .{ @errorName(err) });
+        return err;
+    };
+    switch (msg) {
+        .block => return msg,
+        .notfound => |notfound_msg| {
+            std.log.err("Data not found:", .{});
+            for (notfound_msg.inventory) |inv_item|
+                std.log.err("  - {s}: {x}", .{ @tagName(inv_item.@"type"), inv_item.hash });
+            msg.deinit(allocator);
+            return error.NotFound;
+        },
+        else => return error.UnexpectedMessage,
+    }
+}
+
+pub fn getBlockheadersFilename(state: *const State) []const u8 {
+    switch (state.chain.network) {
+        .mainnet => return blockheaders_filename_mainnet,
+        .signet => return blockheaders_filename_signet,
+    }
 }
 
 /// Caller is responsible for freeing returned string

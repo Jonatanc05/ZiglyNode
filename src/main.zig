@@ -8,6 +8,11 @@ const Blockchain = @import("blockchain.zig");
 const ZiglyNode = @import("ziglynode-core.zig");
 const Address = std.net.Address;
 
+comptime {
+    // logic for `i 2` depends on that
+    std.debug.assert(ZiglyNode.max_connections < 10);
+}
+
 pub const std_options = std.Options{
     .log_level = .info,
 };
@@ -92,7 +97,12 @@ pub fn main() !void {
                 try stdout.print("======== Peer list ========\n", .{});
                 for (state_ptr.connections, 0..) |conn, i| {
                     if (conn.alive)
-                        try stdout.print("\n{d}: {f} | {s}\n", .{ i + 1, conn.data.peer_address, conn.data.user_agent });
+                        try stdout.print("\n{d}: {f} | {s}{s}\n", .{
+                            i + 1,
+                            conn.data.peer_address,
+                            std.mem.trimEnd(u8, &conn.data.user_agent, " "),
+                            if (conn.data.isFullArchivalNode()) " | Full Archival" else "",
+                        });
                 }
                 try stdout.print("\n===========================\n", .{});
                 try stdout.print("\nType 'i' followed by a number to interact with a peer (ex.: 'i 2')\n", .{});
@@ -100,36 +110,31 @@ pub fn main() !void {
             '4' => {
                 var tx = try promptTransaction(allocator, stdout, stdin, Blockchain.isTestnet(state_ptr.chain.network));
                 defer tx.deinit(allocator);
-                const input_index = 0;
                 const prev_pubkey = try Prompt.promptBytesHex("Previous pubkey script (25 bytes for P2PKH)", stdout, stdin);
+                const input_index = 0;
                 try tx.sign(state_ptr.privkey, input_index, prev_pubkey, allocator);
 
-                var growing_buffer = try std.ArrayList(u8).initCapacity(allocator, 100);
-                var writer_concrete: std.Io.Writer.Allocating = .fromArrayList(allocator, &growing_buffer);
-                defer writer_concrete.deinit();
+                const tx_bytes = blk: {
+                    var growing_buffer = try std.ArrayList(u8).initCapacity(allocator, 100);
+                    var writer_concrete: std.Io.Writer.Allocating = .fromArrayList(allocator, &growing_buffer);
+                    defer writer_concrete.deinit();
 
-                tx.serialize(&writer_concrete.writer) catch return error.OutOfMemory;
-                const bytes = try writer_concrete.toOwnedSlice();
-                defer allocator.free(bytes);
-                try stdout.print("\nSigned transaction:\n{x}\n", .{bytes});
+                    tx.serialize(&writer_concrete.writer) catch return error.OutOfMemory;
+                    break :blk try writer_concrete.toOwnedSlice();
+                };
+                defer allocator.free(tx_bytes);
+
+                try stdout.print("\nSigned transaction:\n{x}\n", .{tx_bytes});
                 try stdout.print("\nYou can verifiy the transaction contents using the command `bitcoin tx -json <hex>`\n", .{});
-                const advertise = try Prompt.promptBool("Advertise transaction to network?\n", stdout, stdin);
-                if (advertise) {
-                    for (&state_ptr.connections) |conn| {
-                        if (!conn.alive) break :outerswitch;
-                        const payload = try allocator.alloc(Network.Protocol.ObjectDescription, 1);
-                        defer allocator.free(payload);
-                        payload[0] = Network.Protocol.ObjectDescription{
-                            .@"type" = .MSG_TX,
-                            .hash = 0x0,
-                        };
-                        try Network.Node.sendMessage(&conn.data,
-                            Network.Protocol.Message{
-                                .inv = .{ .inventory = payload }
-                            }
-                        );
-                    }
-                }
+                // // TODO function Bitcoin.Tx.txid
+                // if (state_ptr.active_connections > 0) {
+                //     const advertise = try Prompt.promptBool("Advertise transaction to network?\n", stdout, stdin);
+                //     if (advertise) {
+                //         try ZiglyNode.advertiseTransaction(state_ptr, allocator, 0x00);
+                //     }
+                // } else {
+                //     try stdout.print("No peers to advertise the transaction right now\n", .{});
+                // }
             },
             '5' => break,
             'i' => {
@@ -187,54 +192,9 @@ pub fn main() !void {
                     },
                     '4' => {
                         try prepareOutput(stdout);
-                        if (!connection_ptr.isFullArchivalNode()) {
-                            std.log.err("This peer isn't a full-archival node and can't be asked for entire blocks", .{});
-                            break :outerswitch;
-                        }
-                        if (state_ptr.chain.block_headers_count <= state_ptr.chain.blocks_already_verified) {
-                            std.log.err("We have verified all the blocks we're aware of. Maybe try asking for new block headers?\n", .{});
-                            break :outerswitch;
-                        }
-                        try Network.Node.sendMessage(connection_ptr,
-                            Network.Protocol.Message{
-                                .getdata = payload_with_hashes_of_blocks_being_requested: {
-                                    const amount_to_verify = state_ptr.chain.block_headers_count - state_ptr.chain.blocks_already_verified;
-                                    const amount_to_request_now = @min(amount_to_verify, 1); // TODO Adjust max limit
-                                    var result = Network.Protocol.Message.ObjectDescriptionsMessage("getdata") {
-                                        .inventory = try allocator.alloc(Network.Protocol.ObjectDescription, amount_to_request_now),
-                                    };
-
-                                    for ((&result).inventory, state_ptr.chain.blocks_already_verified..) |*inv_item, idx| {
-                                        inv_item.@"type" = Network.Protocol.ObjectType.MSG_BLOCK;
-                                        var buf: [32]u8 = undefined;
-                                        // TODO cache theses hashes?
-                                        state_ptr.chain.block_headers[idx].hash(&buf);
-                                        inv_item.hash = std.mem.readInt(u256, &buf, .big);
-                                    }
-                                    break :payload_with_hashes_of_blocks_being_requested result;
-                                },
-                            }
-                        );
-                        const msg = Network.Node.readUntilAnyOfGivenMessageTags(
-                            connection_ptr,
-                            &.{Network.Protocol.Message.block, Network.Protocol.Message.notfound},
-                            allocator
-                        ) catch |err| {
-                            std.log.err("{s}", .{ @errorName(err) });
-                            break :outerswitch;
-                        };
-                        defer msg.deinit(allocator);
-                        switch (msg) {
-                            .block => |block_data| {
-                                try stdout.print("Block header: {any}\n", .{block_data.header});
-                            },
-                            .notfound => |notfound_msg| {
-                                try stdout.print("Data not found:\n", .{});
-                                for (notfound_msg.inventory) |inv_item|
-                                    try stdout.print("  - {s}: {x}\n", .{ @tagName(inv_item.@"type"), inv_item.hash });
-                            },
-                            else => unreachable,
-                        }
+                        const block_msg = ZiglyNode.requestActualBlocks(state_ptr, allocator, connection_ptr) catch break :outerswitch;
+                        defer block_msg.deinit(allocator);
+                        try stdout.print("Block header: {any}\n", .{block_msg.block.header});
                     },
                     else => break :outerswitch,
                 }
@@ -247,7 +207,6 @@ pub fn main() !void {
     }
 
     state_ptr.writeBlockheadersToDisk(allocator);
-
 }
 
 fn prepareOutput(stdout: ?*std.Io.Writer) !void {

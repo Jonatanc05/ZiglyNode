@@ -22,6 +22,9 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("sdl3", sdl3.module("sdl3"));
 
+    const dvui_dep = b.dependency("dvui", .{ .target = target, .optimize = optimize, .backend = .sdl3 });
+    exe.root_module.addImport("dvui", dvui_dep.module("dvui_sdl3"));
+
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

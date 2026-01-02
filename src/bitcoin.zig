@@ -197,6 +197,42 @@ pub const Tx = struct {
         };
     }
 
+    const InitP2SHOpt = struct {
+        testnet: bool,
+        prev_txid: u256,
+        prev_output_index: u32,
+        amount: u64,
+        script_hash: []const u8,
+        alloc: mem.Allocator,
+    };
+    pub fn initP2PSH(opt: InitP2SHOpt) !Tx {
+        return .{
+            .version = 1,
+            .inputs = try opt.alloc.dupe(TxInput, &.{
+                .{ .txid = opt.prev_txid, .index = opt.prev_output_index, .script_sig = &[_]u8{}, .sequence = 0xfffffffd },
+            }),
+            .outputs = try opt.alloc.dupe(TxOutput, &outputs: {
+                var outputs: [1]TxOutput = .{
+                    .{
+                        .amount = opt.amount,
+                        .script_pubkey = script_pubkey: {
+                            const Op = Script.Opcode;
+                            var script_pubkey: []u8 = try opt.alloc.alloc(u8, 23);
+
+                            script_pubkey[0] = Op.OP_HASH160;
+                            script_pubkey[1] = 0x14; //P2SH hash is 20 bytes
+                            mem.copyForwards(u8, script_pubkey[2..22], opt.script_hash);
+                            script_pubkey[22] = Op.OP_EQUAL;
+                            break :script_pubkey script_pubkey;
+                        },
+                    },
+                };
+                break :outputs outputs;
+            }),
+            .locktime = 0,
+        };
+    }
+
     pub fn deinit(self: *const Tx, alloc: mem.Allocator) void {
         for (self.inputs) |input| {
             alloc.free(input.script_sig);
@@ -511,6 +547,13 @@ pub const Script = struct {
             alloc.free(self.data);
         }
 
+        fn clone(self: *const Self, alloc: mem.Allocator) !Self {
+            return .{
+                .top = self.top,
+                .data = try alloc.dupe(u8, self.data),
+            };
+        }
+
         /// Calling this function means the stack will be able to grow implicitly when pushing more than bytes than it fits
         fn setAlloc(self: *Self, alloc: mem.Allocator) void {
             self.alloc = alloc;
@@ -593,6 +636,10 @@ pub const Script = struct {
             }
             return true;
         }
+
+        fn clear(self: *Stack) void {
+            self.top = 0;
+        }
     };
 
     // This must not be an enum. An enum is a type. I want constants of type u8. Which means this struct serves only as a namespace
@@ -628,6 +675,7 @@ pub const Script = struct {
         pub const OP_SHA256: u8 = 0xa8;
         pub const OP_HASH160: u8 = 0xa9;
         pub const OP_CHECKSIG: u8 = 0xac;
+        pub const OP_CHECKMULTISIG: u8 = 0xae;
 
         pub fn isSupported(opcode: u8) bool {
             if (opcode < OP_16) return true;
@@ -682,7 +730,7 @@ pub const Script = struct {
                     try stack.push(data);
                 },
                 Op.OP_0 => {
-                    try stack.push(&[_]u8{});
+                    try stack.push(&[1]u8{0x00});
                 },
                 Op.OP_1...Op.OP_16 => { // OP_1 to OP_16
                     try stack.push(&[1]u8{opcode - 0x50});
@@ -779,6 +827,67 @@ pub const Script = struct {
                         try stack.push(&[1]u8{0});
                     }
                 },
+                Op.OP_CHECKMULTISIG => {
+                    // if (transaction == null) @panic("Trying to execute OP_CHECKMULTISIG with a null transaction");
+                    // if (input_index == null) @panic("Trying to execute OP_CHECKMULTISIG with a null input_index");
+
+                    const MAX_KEYS = 20;
+                    const MAX_SIGNATURES = 20;
+
+                    var buffer_pubkey: [Stack.MAX_STACK_ELEMENT_SIZE]u8 = undefined;
+                    var buffer_signature: [Stack.MAX_STACK_ELEMENT_SIZE]u8 = undefined;
+
+                    var pubkeys: [MAX_SIGNATURES][Stack.MAX_STACK_ELEMENT_SIZE]u8 = undefined;
+                    var signatures: [MAX_SIGNATURES][Stack.MAX_STACK_ELEMENT_SIZE]u8 = undefined;
+
+                    const num_keys: usize = @intCast(stack.popInt() catch return error.BadScript);
+                    if (num_keys > MAX_KEYS) { return error.BadScript; }
+
+                    for (0..@intCast(num_keys)) |n| {
+                        const key = stack.pop(&buffer_pubkey) catch |err| return Local.handlePopError(err);
+                        @memcpy(pubkeys[n][0..key.len], key[0..]);
+                    }
+
+                    const num_sigs: usize = @intCast(stack.popInt() catch return error.BadScript);
+                    if (num_sigs > MAX_SIGNATURES or num_sigs > num_keys) { return error.BadScript; }
+                    if (num_sigs > num_keys) {
+                        stack.clear();
+                        try stack.push(&[1]u8{0});
+                        return;
+                    }
+
+                    for (0..@intCast(num_sigs)) |n| {
+                        const sig = stack.pop(&buffer_signature) catch |err| return Local.handlePopError(err);
+                        @memcpy(signatures[n][0..sig.len], sig[0..]);
+                    }
+
+                    // pop dummy value due to quirk in bitcoin
+                    // see https://github.com/bitcoin/bips/blob/master/bip-0147.mediawiki
+                    var dummy_buf: [1]u8 = undefined;
+                    const dummy_val = (stack.pop(&dummy_buf) catch |err| return Local.handlePopError(err))[0];
+                    if (dummy_val != Op.OP_0) return error.BadScript;
+
+                    // also used an index into signatures
+                    // signatures are guaranteed to be in order
+                    var num_valid_sigs: usize = 0;
+
+                    for (0.., pubkeys) |key_idx, pubkey| {
+                        const signature = signatures[num_valid_sigs];
+                        if (try Tx.checksig(transaction.?, input_index.?, &pubkey, &signature, script, alloc)) {
+                            num_valid_sigs += 1;
+                        }
+
+                        const remaining_keys = num_keys - key_idx;
+                        const remaining_sigs = num_sigs - num_valid_sigs;
+                        if (num_valid_sigs == num_sigs or remaining_keys < remaining_sigs) { break; }
+                    }
+
+                    if (num_valid_sigs == num_sigs) {
+                        try stack.push(&[1]u8{1});
+                    } else {
+                        try stack.push(&[1]u8{0});
+                    }
+                },
                 else => {
                     var buffer: [100]u8 = undefined;
                     const msg = std.fmt.bufPrint(&buffer, "Opcode {} not implemented\n", .{opcode}) catch @panic("While running a Script, a not implemented Opcode was found");
@@ -793,6 +902,8 @@ pub const Script = struct {
 
     pub const Error = error{Internal} || mem.Allocator.Error;
     pub fn validate(scriptSig: []const u8, scriptPubKey: []const u8, transaction: ?*Tx, input_index: ?usize, alloc: mem.Allocator) Error!bool {
+        const Op = Script.Opcode;
+
         var stack = try Stack.init(scriptSig.len + scriptPubKey.len, alloc);
         defer stack.deinit(alloc);
         stack.setAlloc(alloc);
@@ -807,12 +918,52 @@ pub const Script = struct {
             }
         };
 
+
+        // detect and handle special p2sh pattern
+        const is_p2sh = scriptPubKey[0] == Op.OP_HASH160 and
+                        scriptPubKey[22] == Op.OP_EQUAL;
+
         Script.run(scriptSig, &stack, transaction, input_index, alloc) catch |err| return Local.handleError(err);
+
+        var stack_clone: ?Stack = null;
+        if (is_p2sh) {
+            stack_clone = try stack.clone(alloc);
+        }
+
         Script.run(scriptPubKey, &stack, transaction, input_index, alloc) catch |err| return Local.handleError(err);
+
+        if (is_p2sh) {
+            stack.deinit(alloc);
+            stack = stack_clone.?;
+
+            var redeem_buf: [Stack.MAX_STACK_ELEMENT_SIZE]u8 = undefined;
+            const redeem_script = stack.pop(&redeem_buf) catch return false;
+            Script.run(redeem_script, &stack, transaction, input_index, alloc) catch |err| return Local.handleError(err);
+        }
 
         return stack.verify();
     }
+
+    // checks if all opcodes are push operations
+    // pub fn only_push_ops(scriptSig: []const u8) bool {
+    //     const Op = Script.Opcode;
+
+    //     var scriptReader = Cursor.init(scriptSig);
+    //     while (!scriptReader.ended()) {
+    //         const opcode = scriptReader.readInt(u8, .little);
+    //         switch(opcode) {
+    //             Op.OP_0 => {},
+    //             Op.OP_1...Op.OP_16 => {},
+    //             Op.OP_PUSHDATA1 => {
+    //                 const size = scriptReader.readInt(u8, .little);
+    //                 scriptReader.index += @intCast(size);
+    //             },
+    //             _ => return false,
+    //         }
+    //     }
+    // }
 };
+
 
 pub const Block = struct {
     version: u32 = 0x20000002,
@@ -1052,6 +1203,147 @@ test "script: Basic script execution" {
     const script_sig = [_]u8{Op.OP_PUSHDATA1} ++ [1]u8{answer.len} ++ answer.*;
     try expect(try Script.validate(&script_sig, &script_pub_key, null, null, t_alloc));
 }
+
+// 2 of 3 multisig
+test "script: P2MS" {
+    // var stack = try Stack.init(16);
+    const priv_key1 = 0x2209ec08beaf4ca4a38118abe96d9d6687a80408d99abc47a9e5e558f3cc3e48;
+    const priv_key2 = 0xcdd804a111ab3961df3e92bb4d5f913471ea24e77bf373d3b010b8a79b92b7d5;
+
+    var   pub_key1: [65]u8 = undefined;
+    var   pub_key2: [65]u8 = undefined;
+    const pub_key3 = [65]u8 {
+        0x04, 0x11, 0xdb, 0x93, 0xe1, 0xdc, 0xdb, 0x8a, 0x01, 0x6b, 0x49, 0x84, 0x0f, 0x8c, 0x53, 0xbc, 0x1e,
+        0xb6, 0x8a, 0x38, 0x2e, 0x97, 0xb1, 0x48, 0x2e, 0xca, 0xd7, 0xb1, 0x48, 0xa6, 0x90, 0x9a, 0x5c, 0xb2,
+        0xe0, 0xea, 0xdd, 0xfb, 0x84, 0xcc, 0xf9, 0x74, 0x44, 0x64, 0xf8, 0x2e, 0x16, 0x0b, 0xfa, 0x9b, 0x8b,
+        0x64, 0xf9, 0xd4, 0xc0, 0x3f, 0x99, 0x9b, 0x86, 0x43, 0xf6, 0x56, 0xb4, 0x12, 0xa3
+    };
+
+    var pubk = CryptLib.G.muli(priv_key1);
+    pubk.serialize(false, &pub_key1);
+
+    pubk = CryptLib.G.muli(priv_key2);
+    pubk.serialize(false, &pub_key2);
+
+
+
+    const Op = Script.Opcode;
+
+    var script_sig = [_]u8{
+        Op.OP_0,
+
+        Op.OP_PUSHDATA1, 72,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+
+        Op.OP_PUSHDATA1, 72,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+
+    var script_pub_key = [_]u8{
+        Op.OP_2,
+
+        // fill in blank bytes for each pubkey and copy the bytes in later
+        Op.OP_PUSHDATA1, 65,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
+
+        Op.OP_PUSHDATA1, 65,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
+
+        Op.OP_PUSHDATA1, 65,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
+
+        Op.OP_3,
+
+        Op.OP_CHECKMULTISIG,
+    };
+
+    @memcpy(script_pub_key[3..68], &pub_key1);
+    @memcpy(script_pub_key[70..135], &pub_key2);
+    @memcpy(script_pub_key[137..202], &pub_key3);
+
+
+
+    var test_tx = Tx{
+        .version = 1,
+        .inputs = try t_alloc.dupe(Tx.TxInput, &.{
+            .{
+                .txid = 0,
+                .index = 0,
+                .script_sig = &[_]u8{},
+                .sequence = 0xfffffffd,
+            }
+        }),
+        .outputs = try t_alloc.dupe(Tx.TxOutput, &.{
+            .{
+                .amount = 1000000,
+                .script_pubkey = &[_]u8{},
+            },
+        }),
+        .witness = null,
+        .locktime = 0,
+    };
+
+    // don't think we have to use a valid prev_script_pubkey or scriptsig
+    // for input since we're only testing locking and unlocking of p2ms
+    try test_tx.sign(priv_key1, 0, &[_]u8{0} ** 256, t_alloc);
+    std.debug.print("{}", .{test_tx.inputs[0].script_sig.len});
+
+    @memcpy(script_sig[3..75], test_tx.inputs[0].script_sig[1..73]);
+
+    try test_tx.sign(priv_key2, 0, &[_]u8{0} ** 256, t_alloc);
+    @memcpy(script_sig[3..75], test_tx.inputs[0].script_sig[1..73]);
+
+    try expect(try Script.validate(&script_sig, &script_pub_key, &test_tx, 0, t_alloc));
+}
+
+// test "tx: p2sh transaction" {
+//     const Op = Script.Opcode;
+//     const privkey = 0xf45e6907b16670196e487cf667e9fa510f0593276335da22311eb67c90d46421;
+//     const pubk = CryptLib.G.muli(privkey);
+//     var pubk_serialized: [33]u8 = undefined;
+//     pubk.serialize(true, &pubk_serialized);
+//     const prev_txid = 0x38067470a9a51bea07c1f8b7f51d75d521b57ca9c9d1bf68a2467efe79971fd2;
+//     const prev_script_pubkey = [_]u8{ 0x76, 0xa9, 0x14, 0xaf, 0x72, 0x4f, 0xc6, 0x1f, 0x4d, 0x5c, 0x4d, 0xb0, 0x6b, 0x33, 0x95, 0xc9, 0xb4, 0x50, 0xa8, 0x0d, 0x25, 0xb6, 0x73, 0x88, 0xac };
+
+//     const p2pkh_pubkey = [_]u8 {
+//         Op.OP_DUP,
+//         Op.OP_HASH160,
+//         0x14, 0x04, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce, 0x87, 0x0b, 0x07, 0x02, 0x9b, 0xfc,
+//         0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2, 0x81, 0x5b, 0x16, 0xf8, 0x17, 0x98, 0x48, 0x3a, 0xda, 0x77, 0x26, 0xa3, 0xc4, 0x65,
+//         0x5d, 0xa4, 0xfb, 0xfc, 0x0e, 0x11, 0x08, 0xa8, 0xfd, 0x17, 0xb4, 0x48, 0xa6, 0x85, 0x54, 0x19, 0x9c, 0x47, 0xd0, 0x8f, 0xfb,
+//         0x10, 0xd4, 0xb8,
+//         Op.OP_EQUAL_VERIFY,
+//         Op.OP_CHECKSIG,
+//     };
+
+//     //wrap2pkh in p2sh
+//     const script_hash: [20]u8 = undefined;
+//     hash160(p2pkh_pubkey, script_hash);
+
+//     var transaction = try Tx.initP2PSH(.{
+//         .testnet = true,
+//         .prev_txid = prev_txid,
+//         .prev_output_index = 1,
+//         .amount = 5000,
+//         .script_hash = script_hash,
+//         .alloc = mem.Allocator,
+//     });
+// }
 
 test "tx: transaction signing and checksig" {
     const privkey = 0xf45e6907b16670196e487cf667e9fa510f0593276335da22311eb67c90d46421;

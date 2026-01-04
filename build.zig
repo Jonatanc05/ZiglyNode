@@ -7,9 +7,9 @@ pub fn build(b: *std.Build) void {
     // Native SDL3 executable
     {
         const exe = b.addExecutable(.{
-            .name = "ZiglyNode",
+            .name = "ZiglyNode-gui",
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/main.zig"),
+                .root_source_file = b.path("src/main_gui.zig"),
                 .target = target,
                 .optimize = optimize,
             }),
@@ -27,12 +27,9 @@ pub fn build(b: *std.Build) void {
         const dvui_dep = b.dependency("dvui", .{ .target = target, .optimize = optimize, .backend = .sdl3 });
         exe.root_module.addImport("dvui", dvui_dep.module("dvui_sdl3"));
 
-        b.installArtifact(exe);
+        const install_exe = b.addInstallArtifact(exe, .{});
 
         const run_cmd = b.addRunArtifact(exe);
-
-        // run from installation directory rather than directly from cache directory
-        run_cmd.step.dependOn(b.getInstallStep());
 
         // allows `zig build run -- arg1 arg2 etc`
         if (b.args) |args| {
@@ -40,7 +37,36 @@ pub fn build(b: *std.Build) void {
         }
 
         // This will evaluate the `run` step rather than the default, which is "install".
-        const run_step = b.step("run", "Run the app");
+        const run_step = b.step("gui", "Run the GUI app");
+        run_step.dependOn(&install_exe.step);
+        run_step.dependOn(&run_cmd.step);
+    }
+
+    // CLI
+    {
+        const exe = b.addExecutable(.{
+            .name = "ZiglyNode-cli",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/main_cli.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+            .use_llvm = true,
+        });
+        exe.addIncludePath(b.path("include"));
+
+        const install_exe = b.addInstallArtifact(exe, .{});
+
+        const run_cmd = b.addRunArtifact(exe);
+
+        // allows `zig build run -- arg1 arg2 etc`
+        if (b.args) |args| {
+            run_cmd.addArgs(args);
+        }
+
+        // This will evaluate the `run` step rather than the default, which is "install".
+        const run_step = b.step("cli", "Run the CLI app");
+        run_step.dependOn(&install_exe.step);
         run_step.dependOn(&run_cmd.step);
     }
 
@@ -60,7 +86,7 @@ pub fn build(b: *std.Build) void {
         const wasm_exe = b.addExecutable(.{
             .name = "web",
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/main.zig"),
+                .root_source_file = b.path("src/main_gui.zig"),
                 .target = wasm_target,
                 .optimize = optimize,
                 .link_libc = false,

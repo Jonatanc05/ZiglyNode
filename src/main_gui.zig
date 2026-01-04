@@ -35,9 +35,12 @@ pub const std_options: std.Options = .{
 var gpa_instance = std.heap.GeneralPurposeAllocator(.{}){};
 const gpa = gpa_instance.allocator();
 
+var state_ptr: *zigly.State = undefined;
+
 var orig_content_scale: f32 = 1.0;
 var warn_on_quit: bool = false;
 var warn_on_quit_closing: bool = false;
+var prompting_new_connection: bool = false;
 
 // Runs before the first frame, after backend and dvui.Window.init()
 // - runs between win.begin()/win.end()
@@ -56,10 +59,15 @@ pub fn AppInit(win: *dvui.Window) !void {
 
         win.themeSet(theme);
     }
+
+    state_ptr = try zigly.State.initAndLoad(gpa);
+
 }
 
 // Run as app is shutting down before dvui.Window.deinit()
-pub fn AppDeinit() void {}
+pub fn AppDeinit() void {
+    state_ptr.deinit(gpa);
+}
 
 // Run each frame to do normal UI
 pub fn AppFrame() !dvui.App.Result {
@@ -95,6 +103,25 @@ pub fn frame() !dvui.App.Result {
 
     var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both, .style = .window });
     defer scroll.deinit();
+
+    {
+        var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .style = .window, .background = true, .expand = .horizontal });
+        defer hbox.deinit();
+
+        const ip_entry = dvui.textEntry(@src(), .{ .placeholder = "77.173.132.140" }, .{});
+        const ip_str = ip_entry.textGet(); // try moving this line down after deinit
+        ip_entry.deinit();
+
+        const port_entry = dvui.textEntry(@src(), .{ .placeholder = "8333" }, .{});
+        const port_str = port_entry.textGet();
+        port_entry.deinit();
+
+        if (dvui.button(@src(), "+ new peer", .{}, .{})) {
+            const port = try std.fmt.parseInt(u16, port_str, 10);
+            try zigly.newConnection(state_ptr, gpa, try std.net.Address.resolveIp(ip_str, port));
+        }
+
+    }
 
     var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .font = .theme(.title) });
     const lorem = "This is a dvui.App example that can compile on multiple backends.";

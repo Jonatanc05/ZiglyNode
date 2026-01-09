@@ -178,7 +178,7 @@ pub fn main() !void {
                         var requests_count = try Prompt.promptInt(u32, "How many requests to send (2000 blocks/request)", stdout, stdin, .{ .default_value = 1 });
                         try prepareOutput(stdout);
                         requests: while (requests_count > 0) : (requests_count -= 1) {
-                            const result = zigly.requestBlocks(state_ptr, connection_ptr, allocator, stdout);
+                            const result = zigly.requestBlocks(state_ptr, connection_ptr, allocator);
                             if (result) |block_count| {
                                 try stdout.print("Blocks received. Total blocks: {d:0>7}\n", .{state_ptr.chain.block_headers_count});
                                 if (block_count < 2000) {

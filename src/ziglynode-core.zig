@@ -149,8 +149,8 @@ pub fn removeConnection(state_ptr: *State, index: usize) error{InvalidIndex}!voi
     state_ptr.active_connections -= 1;
 }
 
-pub fn requestBlocks(state: *State, connection: *const Network.Node.Connection, alloc: std.mem.Allocator, out: *std.Io.Writer) !usize {
-    try out.print("Requesting for block headers...\n", .{});
+pub fn requestBlocks(state: *State, connection: *const Network.Node.Connection, alloc: std.mem.Allocator) !usize {
+    log.info("Requesting for block headers...\n", .{});
     try Network.Node.sendMessage(connection, Network.Protocol.Message{
         .getheaders = .{
             .hash_count = 1,

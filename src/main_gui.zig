@@ -1,8 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const zigly = @import("ziglynode-core.zig");
-const sdl = @import("sdl3");
 const dvui = @import("dvui");
+const log = std.log.scoped(.zigly_gui);
 
 // To be a dvui App:
 // * declare "dvui_app"
@@ -16,8 +16,7 @@ pub const dvui_app: dvui.App = .{
             .title = "DVUI App Example",
             .icon = null,
             .window_init_options = .{
-                // Could set a default theme here
-                // .theme = dvui.Theme.builtin.dracula,
+                .theme = dvui.Theme.builtin.adwaita_dark,
             },
         },
     },
@@ -28,7 +27,7 @@ pub const dvui_app: dvui.App = .{
 pub const main = dvui.App.main;
 pub const panic = dvui.App.panic;
 pub const std_options: std.Options = .{
-    .log_level = .info,
+    .log_level = .debug,
     .logFn = dvui.App.logFn,
 };
 
@@ -36,32 +35,20 @@ var gpa_instance = std.heap.GeneralPurposeAllocator(.{}){};
 const gpa = gpa_instance.allocator();
 
 var state_ptr: *zigly.State = undefined;
+var peer_interacting = [1]bool{false} ** zigly.max_connections;
 
 var orig_content_scale: f32 = 1.0;
 var warn_on_quit: bool = false;
 var warn_on_quit_closing: bool = false;
 var prompting_new_connection: bool = false;
 
-// Runs before the first frame, after backend and dvui.Window.init()
-// - runs between win.begin()/win.end()
 pub fn AppInit(win: *dvui.Window) !void {
     orig_content_scale = win.content_scale;
 
     // Add your own bundled font files...:
     // try dvui.addFont("NOTO", @embedFile("../src/fonts/NotoSansKR-Regular.ttf"), null);
 
-    if (false) {
-        // If you need to set a theme based on the users preferred color scheme, do it here
-        const theme = switch (win.backend.preferredColorScheme() orelse .light) {
-            .light => dvui.Theme.builtin.adwaita_light,
-            .dark => dvui.Theme.builtin.adwaita_dark,
-        };
-
-        win.themeSet(theme);
-    }
-
     state_ptr = try zigly.State.initAndLoad(gpa);
-
 }
 
 // Run as app is shutting down before dvui.Window.deinit()
@@ -104,55 +91,9 @@ pub fn frame() !dvui.App.Result {
     var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both, .style = .window });
     defer scroll.deinit();
 
-    {
-        var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .style = .window, .background = true, .expand = .horizontal });
-        defer hbox.deinit();
+    try peerListWidget();
 
-        const ip_entry = dvui.textEntry(@src(), .{ .placeholder = "77.173.132.140" }, .{});
-        const ip_str = ip_entry.textGet(); // try moving this line down after deinit
-        ip_entry.deinit();
-
-        const port_entry = dvui.textEntry(@src(), .{ .placeholder = "8333" }, .{});
-        const port_str = port_entry.textGet();
-        port_entry.deinit();
-
-        if (dvui.button(@src(), "+ new peer", .{}, .{})) {
-            const port = try std.fmt.parseInt(u16, port_str, 10);
-            try zigly.newConnection(state_ptr, gpa, try std.net.Address.resolveIp(ip_str, port));
-        }
-
-    }
-
-    var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .font = .theme(.title) });
-    const lorem = "This is a dvui.App example that can compile on multiple backends.";
-    tl.addText(lorem, .{});
-    tl.addText("\n", .{});
-    tl.format("Current backend: {s}", .{@tagName(dvui.backend.kind)}, .{});
-    if (dvui.backend.kind == .web) {
-        tl.format(" : {s}", .{if (dvui.backend.wasm.wasm_about_webgl2() == 1) "webgl2" else "webgl (no mipmaps)"}, .{});
-    }
-    tl.deinit();
-
-    var tl2 = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal });
-    tl2.addText(
-        \\DVUI
-        \\- paints the entire window
-        \\- can show floating windows and dialogs
-        \\- rest of the window is a scroll area
-    , .{});
-    tl2.addText("\n\n", .{});
-    tl2.addText("Framerate is variable and adjusts as needed for input events and animations.", .{});
-    tl2.addText("\n\n", .{});
-    tl2.addText("Framerate is capped by vsync.", .{});
-    tl2.addText("\n\n", .{});
-    tl2.addText("Cursor is always being set by dvui.", .{});
-    tl2.addText("\n\n", .{});
-    if (dvui.useFreeType) {
-        tl2.addText("Fonts are being rendered by FreeType 2.", .{});
-    } else {
-        tl2.addText("Fonts are being rendered by stb_truetype.", .{});
-    }
-    tl2.deinit();
+    _ = dvui.separator(@src(), .{});
 
     const label = if (dvui.Examples.show_demo_window) "Hide Demo Window" else "Show Demo Window";
     if (dvui.button(@src(), label, .{}, .{ .tag = "show-demo-btn" })) {
@@ -182,35 +123,78 @@ pub fn frame() !dvui.App.Result {
         }
     }
 
-    if (dvui.backend.kind != .web) {
-        _ = dvui.checkbox(@src(), &warn_on_quit, "Warn on Quit", .{});
-
-        if (warn_on_quit) {
-            if (warn_on_quit_closing) return .close;
-
-            const wd = dvui.currentWindow().data();
-            for (dvui.events()) |*e| {
-                if (!dvui.eventMatchSimple(e, wd)) continue;
-
-                if ((e.evt == .window and e.evt.window.action == .close) or (e.evt == .app and e.evt.app.action == .quit)) {
-                    e.handle(@src(), wd);
-
-                    const warnAfter: dvui.DialogCallAfterFn = struct {
-                        fn warnAfter(_: dvui.Id, response: dvui.enums.DialogResponse) !void {
-                            if (response == .ok) warn_on_quit_closing = true;
-                        }
-                    }.warnAfter;
-
-                    dvui.dialog(@src(), .{}, .{ .message = "Really Quit?", .cancel_label = "Cancel", .callafterFn = warnAfter });
-                }
-            }
-        }
-    }
-
     // look at demo() for examples of dvui widgets, shows in a floating window
     dvui.Examples.demo();
 
     return .ok;
+}
+
+pub fn peerListWidget() !void {
+    var vbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .style = .window, .expand = .horizontal });
+    defer vbox.deinit();
+
+    {
+        var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .style = .window, .expand = .vertical });
+        defer hbox.deinit();
+
+        const ip_entry = dvui.textEntry(@src(), .{ .placeholder = "77.173.132.140" }, .{});
+        const enter_pressed_ip_entry = ip_entry.enter_pressed;
+        var ip_str = std.mem.trim(u8, ip_entry.textGet(), &.{' ', '\r', '\n', '\t'});
+        if (ip_str.len == 0) ip_str = "77.173.132.140";
+        ip_entry.deinit();
+
+        const port_entry = dvui.textEntry(@src(), .{ .placeholder = "8333" }, .{});
+        const enter_pressed_port_entry = ip_entry.enter_pressed;
+        var port_str = std.mem.trim(u8, port_entry.textGet(), &.{' ', '\r', '\n', '\t'});
+        if (port_str.len == 0) port_str = "8333";
+        port_entry.deinit();
+
+        if (dvui.button(@src(), "+ new peer", .{}, .{}) or enter_pressed_port_entry or enter_pressed_ip_entry) {
+            const port = try std.fmt.parseInt(u16, port_str, 10);
+            try zigly.newConnection(state_ptr, gpa, try std.net.Address.resolveIp(ip_str, port));
+            dvui.focusWidget(null, null, null);
+        }
+    }
+
+    dvui.labelNoFmt(@src(), "Peers connected:", .{}, .{ .font = .theme(.heading)});
+
+    for (state_ptr.connections, 0..) |conn, i| {
+        if (!conn.alive) continue;
+        var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .style = .window, .background = false, .expand = .horizontal, .id_extra = i });
+        defer hbox.deinit();
+        dvui.label(@src(), "    {d}: {f} | {s}{s}\n", .{
+            i + 1,
+            conn.data.peer_address,
+            std.mem.trimEnd(u8, &conn.data.user_agent, " "),
+            if (conn.data.isFullArchivalNode()) " | Full Archival" else "",
+        }, .{
+            .font = .theme(.title),
+            .id_extra = i,
+        });
+
+        var removeButton: dvui.WidgetData = undefined;
+        if (dvui.buttonIcon(@src(), "connection_remove", dvui.entypo.trash, .{}, .{ .fill_color = dvui.Color.red }, .{ .id_extra = i, .data_out = &removeButton })) {
+            zigly.removeConnection(state_ptr, i) catch |err| {
+                log.err("{s}", .{ @errorName(err) });
+            };
+        }
+        dvui.tooltip(@src(), .{ .active_rect = removeButton.borderRectScale().r }, "Remove peer", .{}, .{});
+
+        var interactButton: dvui.WidgetData = undefined;
+        if (dvui.buttonIcon(@src(), "connection_interact", dvui.entypo.chat, .{}, .{}, .{ .id_extra = i, .data_out = &interactButton })) {
+            peer_interacting[i] = !peer_interacting[i];
+        }
+        dvui.tooltip(@src(), .{ .active_rect = interactButton.borderRectScale().r }, "Toggle peer interaction", .{}, .{});
+
+        if (peer_interacting[i]) {
+            const menu = dvui.menu(@src(), .vertical, .{});
+            // var interact_box = dvui.box(@src(), .{ .dir = .horizontal }, .{ .style = .control, .background = true, .expand = .horizontal, .id_extra = i });
+            menu.deinit();
+        }
+    }
+    if (state_ptr.active_connections == 0)
+        dvui.labelNoFmt(@src(), "    <no entries>\n", .{}, .{});
+
 }
 
 test "tab order" {

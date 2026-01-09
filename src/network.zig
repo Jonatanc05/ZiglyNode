@@ -3,6 +3,7 @@ const net = std.net;
 const assert = std.debug.assert;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const is_windows = @import("builtin").os.tag == .windows;
+const log = std.log.scoped(.zigly_lib);
 
 // managed dependencies
 const Bitcoin = @import("bitcoin.zig");
@@ -565,7 +566,7 @@ pub const Node = struct {
     pub fn connect(address: net.Address, self_user_agent: []const u8, alloc: std.mem.Allocator, timeout_seconds: comptime_int) !Connection {
         const posix = std.posix;
         const sockfd = posix.socket(address.any.family, posix.SOCK.STREAM, posix.IPPROTO.TCP) catch |err| {
-            std.log.err("Failed to create socket for {f}: {t}", .{ address, err });
+            log.err("Failed to create socket for {f}: {t}", .{ address, err });
             return error.ConnectionError;
         };
         const sock_connect = struct {
@@ -573,7 +574,7 @@ pub const Node = struct {
                 posix.connect(_sockfd, &_address.any, _address.getOsSockLen()) catch |err| switch (err) {
                     posix.ConnectError.WouldBlock => {},
                     else => {
-                        std.log.err("Failed to connect to {f}: {t}", .{ _address, err });
+                        log.err("Failed to connect to {f}: {t}", .{ _address, err });
                         return error.ConnectionError;
                     },
                 };
@@ -689,18 +690,18 @@ pub const Node = struct {
     pub fn sendMessage(connection: *const Node.Connection, message: Protocol.Message) !void {
         var buffer: [1024]u8 = undefined;
         const data = try message.serialize(&buffer);
-        std.log.debug("Sending message \"{s}\" with following payload ({d} bytes):", .{ @tagName(message), data.len - Protocol.header_len });
+        log.debug("Sending message \"{s}\" with following payload ({d} bytes):", .{ @tagName(message), data.len - Protocol.header_len });
         const debug_clip_index = 1000;
         if (data.len > (debug_clip_index + Protocol.header_len)) {
-            std.log.debug("{x}... (+{d} bytes)", .{ data[Protocol.header_len..][0..debug_clip_index], data.len - debug_clip_index - Protocol.header_len });
+            log.debug("{x}... (+{d} bytes)", .{ data[Protocol.header_len..][0..debug_clip_index], data.len - debug_clip_index - Protocol.header_len });
         } else {
-            std.log.debug("{x}", .{data[Protocol.header_len..]});
+            log.debug("{x}", .{data[Protocol.header_len..]});
         }
 
         var writer_concrete = connection.stream.writer(&.{});
         var writer = &writer_concrete.interface;
         writer.writeAll(data) catch |err| {
-           std.log.err("Failed to write to socket at {f}: {t}", .{ connection.peer_address, err });
+           log.err("Failed to write to socket at {f}: {t}", .{ connection.peer_address, err });
            return error.SendError;
         };
     }
@@ -714,7 +715,7 @@ pub const Node = struct {
         var reader_concrete = connection.stream.reader(&.{});
         var reader = reader_concrete.interface();
         const read_count1 = reader.readSliceShort(header_slice) catch |err| {
-            std.log.err("Failed to read from socket at {f}: {t}", .{ connection.peer_address, err });
+            log.err("Failed to read from socket at {f}: {t}", .{ connection.peer_address, err });
             return error.ReceiveError;
         };
         if (read_count1 < header_len) return error.NoMessages;
@@ -723,17 +724,17 @@ pub const Node = struct {
         const payload_slice = buffer[header_len..][0..payload_length];
 
         const read_count2 = reader.readSliceShort(payload_slice) catch |err| {
-            std.log.err("Failed to read from socket at {f}: {t}", .{ connection.peer_address, err });
+            log.err("Failed to read from socket at {f}: {t}", .{ connection.peer_address, err });
             return error.ReceiveError;
         };
         if (read_count2 < payload_length) return error.ReceiveError;
 
-        std.log.debug("Received message \"{s}\" with the following payload ({d} bytes):", .{ header_slice[4..16], payload_length });
+        log.debug("Received message \"{s}\" with the following payload ({d} bytes):", .{ header_slice[4..16], payload_length });
         const debug_clip_index = 1000;
         if (payload_slice.len > debug_clip_index) {
-            std.log.debug("{x}... (+{d} bytes)", .{ payload_slice[0..debug_clip_index], payload_slice.len - debug_clip_index });
+            log.debug("{x}... (+{d} bytes)", .{ payload_slice[0..debug_clip_index], payload_slice.len - debug_clip_index });
         } else {
-            std.log.debug("{x}", .{payload_slice});
+            log.debug("{x}", .{payload_slice});
         }
 
         var parse_reader: std.Io.Reader = .fixed(&buffer);

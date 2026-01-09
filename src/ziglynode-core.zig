@@ -6,6 +6,7 @@ const Bitcoin = @import("bitcoin.zig");
 const Network = @import("network.zig");
 const Blockchain = @import("blockchain.zig");
 const Address = std.net.Address;
+const log = std.log.scoped(.zigly_core);
 
 pub const app_name = "ZiglyNode";
 pub const max_connections = 8;
@@ -33,7 +34,7 @@ pub const State = struct {
             const filename = ".privkey";
             var resulting_file = openAppFile(allocator, filename, .{}) catch |err| switch(err) {
                 error.FileNotFound => blk: {
-                    std.log.info("couldn't find {s} file, creating...", .{filename});
+                    log.info("couldn't find {s} file, creating...", .{filename});
                     const filepath = try getAppFileAbsolutePath(allocator, filename);
                     const file = try std.fs.createFileAbsolute(filepath, .{ .read = true });
                     try file.writeAll("0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a");
@@ -74,7 +75,7 @@ pub const State = struct {
         read_blockheaders_from_disk: {
             const blockheaders_file = openAppFile(allocator, blockheaders_filename, .{}) catch |err| switch(err) {
                 error.FileNotFound => {
-                    std.log.warn("could not find existing {s}", .{blockheaders_filename});
+                    log.warn("could not find existing {s}", .{blockheaders_filename});
                     break :read_blockheaders_from_disk;
                 },
                 else => break :read_blockheaders_from_disk,
@@ -84,7 +85,7 @@ pub const State = struct {
             var buf: [@sizeOf(Bitcoin.Block)]u8 = undefined;
             var reader = blockheaders_file.reader(&buf);
             state_ptr.chain.parse(&reader.interface) catch {
-                std.log.err("The {s} file is corrupt (or from incompatible ZiglyNode versions)... fix or delete it before proceeding", .{blockheaders_filename});
+                log.err("The {s} file is corrupt (or from incompatible ZiglyNode versions)... fix or delete it before proceeding", .{blockheaders_filename});
                 return error.BlockheadersFileCorrupt;
             };
         }
@@ -102,13 +103,13 @@ pub const State = struct {
 
     pub fn writeBlockheadersToDisk(self: *const State, allocator: std.mem.Allocator) void {
         if (self.chain.block_headers_count != self.initial_block_header_count) {
-            std.log.info("saving data on disk...", .{});
+            log.info("saving data on disk...", .{});
 
             const blockheaders_filename = getBlockheadersFilename(self);
 
             write_blockheaders_to_disk: {
                 const blockheaders_file = openAppFile(allocator, blockheaders_filename, .{.override_existing = true}) catch |err| {
-                    std.log.err("could not create {s}: {t}", .{ blockheaders_filename, err });
+                    log.err("could not create {s}: {t}", .{ blockheaders_filename, err });
                     break :write_blockheaders_to_disk;
                 };
                 defer blockheaders_file.close();
@@ -116,7 +117,7 @@ pub const State = struct {
                 var buf: [@sizeOf(Bitcoin.Block)]u8 = undefined;
                 var writer = blockheaders_file.writer(&buf);
                 self.chain.serialize(&writer.interface) catch |err| {
-                    std.log.err("failed to write blocks to {s}: {t}", .{ blockheaders_filename, err });
+                    log.err("failed to write blocks to {s}: {t}", .{ blockheaders_filename, err });
                     break :write_blockheaders_to_disk;
                 };
             }
@@ -133,11 +134,19 @@ pub const State = struct {
 pub fn newConnection(state_ptr: *State, allocator: std.mem.Allocator, target_ip_address: std.net.Address) !void {
     const new_peer_id = try state_ptr.idOfNextConnection();
     state_ptr.connections[new_peer_id].data = Network.Node.connect(target_ip_address, app_name, allocator, connection_timeout_seconds) catch |err| {
-        std.log.err("Failed to connect to {f}: {t}", .{ target_ip_address, err });
+        log.err("Failed to connect to {f}: {t}", .{ target_ip_address, err });
         return err;
     };
     state_ptr.connections[new_peer_id].alive = true;
     state_ptr.active_connections += 1;
+}
+
+pub fn removeConnection(state_ptr: *State, index: usize) error{InvalidIndex}!void {
+    if (index < 0 or index > state_ptr.connections.len or !state_ptr.connections[index].alive) {
+        return error.InvalidIndex;
+    }
+    state_ptr.connections[index].alive = false;
+    state_ptr.active_connections -= 1;
 }
 
 pub fn requestBlocks(state: *State, connection: *const Network.Node.Connection, alloc: std.mem.Allocator, out: *std.Io.Writer) !usize {
@@ -183,15 +192,15 @@ pub fn requestNewPeers(state: *State, connection: *const Network.Node.Connection
         for (pool.threads) |thr| thr.detach();
     }
     if (state.active_connections >= max_connections) {
-        std.log.err("Maximum number of connections reached: {}\n", .{max_connections});
+        log.err("Maximum number of connections reached: {}\n", .{max_connections});
         return error.MaximumNumberOfConnectionsReached;
     }
-    std.log.info("Requesting for new peers and connecting...", .{});
+    log.info("Requesting for new peers and connecting...", .{});
     try Network.Node.sendMessage(connection, Network.Protocol.Message{ .getaddr = .{} });
     const message = try Network.Node.readUntilAnyOfGivenMessageTags(connection, &.{Network.Protocol.Message.addr}, alloc);
     defer message.deinit(alloc);
     std.debug.assert(message == .addr);
-    std.log.debug("Received {} new addresses, trying to connect...", .{message.addr.count});
+    log.debug("Received {} new addresses, trying to connect...", .{message.addr.count});
 
     var addr_ptr_array = try alloc.alloc(*Network.Protocol.Addr, message.addr.addr_array.len);
     defer alloc.free(addr_ptr_array);
@@ -224,19 +233,19 @@ pub fn requestNewPeers(state: *State, connection: *const Network.Node.Connection
                             break :blk Address.initIp6(worker_params.addr.ip, worker_params.addr.port, 0, 0);
                         }
                     };
-                    std.log.info("Connecting to {f}...", .{address});
+                    log.info("Connecting to {f}...", .{address});
                     const new_connection = Network.Node.connect(address, app_name, worker_params.alloc, connection_timeout_seconds) catch |err| {
                         // In the future we'll do something like this to immediatly dequeue next address
                         // worker_params.state.mutex.lock();
                         // defer worker_params.state.mutex.unlock();
                         // worker_params.pool.spawn
-                        std.log.info("Connection to {f} failed: {t}", .{ address, err });
+                        log.info("Connection to {f} failed: {t}", .{ address, err });
                         return;
                     };
                     const connection_slot_ptr = for (&worker_params.state.connections) |*conn| {
                         if (!conn.alive) break conn;
                     } else {
-                        std.log.info("Connection to {f} completed but abandoned for lack of slots", .{address});
+                        log.info("Connection to {f} completed but abandoned for lack of slots", .{address});
                         return;
                     };
 
@@ -244,7 +253,7 @@ pub fn requestNewPeers(state: *State, connection: *const Network.Node.Connection
                         worker_params.state.mutex.lock();
                         defer worker_params.state.mutex.unlock();
                         if (worker_params.state.active_connections >= max_connections) {
-                            std.log.info("Connection to {f} completed but abandoned because slots were filled while we waited for mutex lock", .{address});
+                            log.info("Connection to {f} completed but abandoned because slots were filled while we waited for mutex lock", .{address});
                             //worker_params.event.set();
                             return;
                         }
@@ -253,7 +262,7 @@ pub fn requestNewPeers(state: *State, connection: *const Network.Node.Connection
                         worker_params.state.active_connections += 1;
                         worker_params.new_connections_count.* += 1;
                     }
-                    std.log.info("Connected to {f}", .{address});
+                    log.info("Connected to {f}", .{address});
                 }
             }.inner,
             .{ConnectWorkerParams{ .state = state, .addr = addr, .new_connections_count = &new_connections_count, .semaphore = &semaphore, .alloc = alloc }},
@@ -263,7 +272,7 @@ pub fn requestNewPeers(state: *State, connection: *const Network.Node.Connection
     Thread.sleep(500_000_000);
     for (0..num_tasks) |_| semaphore.wait();
 
-    std.log.info("Connected to {d} new peers\n", .{new_connections_count});
+    log.info("Connected to {d} new peers\n", .{new_connections_count});
 }
 
 pub fn advertiseTransaction(state_ptr: *const State, allocator: std.mem.Allocator, txid: u256) void {
@@ -286,11 +295,11 @@ pub fn advertiseTransaction(state_ptr: *const State, allocator: std.mem.Allocato
 /// On success, caller should deinit returned message
 pub fn requestActualBlocks(state_ptr: *const State, allocator: std.mem.Allocator, connection_ptr: *const Network.Node.Connection) !Network.Protocol.Message{
     if (!connection_ptr.isFullArchivalNode()) {
-        std.log.err("This peer isn't a full-archival node and can't be asked for entire blocks", .{});
+        log.err("This peer isn't a full-archival node and can't be asked for entire blocks", .{});
         return error.NotFullArchivalNode;
     }
     if (state_ptr.chain.block_headers_count <= state_ptr.chain.blocks_already_verified) {
-        std.log.err("We have verified all the blocks we're aware of. Maybe try asking for new block headers?\n", .{});
+        log.err("We have verified all the blocks we're aware of. Maybe try asking for new block headers?\n", .{});
         return error.NoMoreBlocksToAsk;
     }
     try Network.Node.sendMessage(connection_ptr,
@@ -318,15 +327,15 @@ pub fn requestActualBlocks(state_ptr: *const State, allocator: std.mem.Allocator
         &.{Network.Protocol.Message.block, Network.Protocol.Message.notfound},
         allocator
     ) catch |err| {
-        std.log.err("error waiting for block message: {s}", .{ @errorName(err) });
+        log.err("error waiting for block message: {s}", .{ @errorName(err) });
         return err;
     };
     switch (msg) {
         .block => return msg,
         .notfound => |notfound_msg| {
-            std.log.err("Data not found:", .{});
+            log.err("Data not found:", .{});
             for (notfound_msg.inventory) |inv_item|
-                std.log.err("  - {s}: {x}", .{ @tagName(inv_item.@"type"), inv_item.hash });
+                log.err("  - {s}: {x}", .{ @tagName(inv_item.@"type"), inv_item.hash });
             msg.deinit(allocator);
             return error.NotFound;
         },
@@ -363,7 +372,7 @@ pub fn openAppFile(gpa: std.mem.Allocator, filename: []const u8, comptime opt: O
     const filepath = try getAppFileAbsolutePath(gpa, filename);
     defer gpa.free(filepath);
 
-    std.log.info("accessing {s}...", .{filepath});
+    log.info("accessing {s}...", .{filepath});
     if (opt.override_existing) {
         return try std.fs.createFileAbsolute(filepath, .{});
     } else {

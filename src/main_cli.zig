@@ -5,12 +5,12 @@ const builtin = @import("builtin");
 const Bitcoin = @import("bitcoin.zig");
 const Network = @import("network.zig");
 const Blockchain = @import("blockchain.zig");
-const ZiglyNode = @import("ziglynode-core.zig");
+const zigly = @import("ziglynode-core.zig");
 const Address = std.net.Address;
 
 comptime {
     // logic for `i 2` depends on that
-    std.debug.assert(ZiglyNode.max_connections < 10);
+    std.debug.assert(zigly.max_connections < 10);
 }
 
 pub const std_options = std.Options{
@@ -36,7 +36,7 @@ pub fn main() !void {
         }
     };
 
-    var state_ptr: *ZiglyNode.State = try ZiglyNode.State.initAndLoad(allocator);
+    var state_ptr: *zigly.State = try zigly.State.initAndLoad(allocator);
     defer state_ptr.deinit(allocator);
 
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
@@ -85,7 +85,7 @@ pub fn main() !void {
                 const target_ip_address = try Prompt.promptIpAddress(stdout, stdin, .{ .default_value = "127.0.0.1" });
                 try prepareOutput(stdout);
 
-                ZiglyNode.newConnection(state_ptr, allocator, target_ip_address) catch break :outerswitch;
+                zigly.newConnection(state_ptr, allocator, target_ip_address) catch break :outerswitch;
                 try stdout.print("\nConnection established successfully with \nPeer ID: {d}\nIP: {f}\nUser Agent: {s}\n\n", .{
                     new_peer_id + 1,
                     state_ptr.connections[new_peer_id].data.peer_address,
@@ -138,7 +138,7 @@ pub fn main() !void {
             },
             '5' => break,
             'i' => {
-                std.debug.assert(ZiglyNode.max_connections < 10); // Based on this premise we assume 3 character input: 'i', ' ' and 'X' as single-digit number
+                std.debug.assert(zigly.max_connections < 10); // Based on this premise we assume 3 character input: 'i', ' ' and 'X' as single-digit number
                 const trimmed = std.mem.trimRight(u8, input, &.{ ' ', '\r', '\n' });
                 if (trimmed.len != 3 or trimmed[1] != ' ' or trimmed[2] < '1' or trimmed[2] > '9') {
                     try prepareOutput(stdout);
@@ -163,13 +163,14 @@ pub fn main() !void {
                 std.debug.assert(try stdin.discardShort(1) == 1);
                 switch (action[0]) {
                     '1' => {
-                        state_ptr.connections[peer_id].alive = false;
-                        state_ptr.active_connections -= 1;
+                        zigly.removeConnection(state_ptr, peer_id) catch |err| {
+                            std.log.err("{s}", .{ @errorName(err) });
+                        };
                     },
                     '2' => {
                         try prepareOutput(stdout);
 
-                        ZiglyNode.requestNewPeers(state_ptr, connection_ptr, allocator) catch {
+                        zigly.requestNewPeers(state_ptr, connection_ptr, allocator) catch {
                             std.log.err("Could not complete address list request to {f}", .{ connection_ptr.peer_address });
                         };
                     },
@@ -177,7 +178,7 @@ pub fn main() !void {
                         var requests_count = try Prompt.promptInt(u32, "How many requests to send (2000 blocks/request)", stdout, stdin, .{ .default_value = 1 });
                         try prepareOutput(stdout);
                         requests: while (requests_count > 0) : (requests_count -= 1) {
-                            const result = ZiglyNode.requestBlocks(state_ptr, connection_ptr, allocator, stdout);
+                            const result = zigly.requestBlocks(state_ptr, connection_ptr, allocator, stdout);
                             if (result) |block_count| {
                                 try stdout.print("Blocks received. Total blocks: {d:0>7}\n", .{state_ptr.chain.block_headers_count});
                                 if (block_count < 2000) {
@@ -192,7 +193,7 @@ pub fn main() !void {
                     },
                     '4' => {
                         try prepareOutput(stdout);
-                        const block_msg = ZiglyNode.requestActualBlocks(state_ptr, allocator, connection_ptr) catch break :outerswitch;
+                        const block_msg = zigly.requestActualBlocks(state_ptr, allocator, connection_ptr) catch break :outerswitch;
                         defer block_msg.deinit(allocator);
                         try stdout.print("Block header: {any}\n", .{block_msg.block.header});
                     },

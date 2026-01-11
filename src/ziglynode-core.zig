@@ -108,7 +108,7 @@ pub const State = struct {
             const blockheaders_filename = getBlockheadersFilename(self);
 
             write_blockheaders_to_disk: {
-                const blockheaders_file = openAppFile(allocator, blockheaders_filename, .{.override_existing = true}) catch |err| {
+                const blockheaders_file = openAppFile(allocator, blockheaders_filename, .{.start_fresh = true}) catch |err| {
                     log.err("could not create {s}: {t}", .{ blockheaders_filename, err });
                     break :write_blockheaders_to_disk;
                 };
@@ -149,7 +149,7 @@ pub fn removeConnection(state_ptr: *State, index: usize) error{InvalidIndex}!voi
     state_ptr.active_connections -= 1;
 }
 
-pub fn requestBlocks(state: *State, connection: *const Network.Node.Connection, alloc: std.mem.Allocator) !usize {
+pub fn requestBlockheaders(state: *State, connection: *const Network.Node.Connection, alloc: std.mem.Allocator) !usize {
     log.info("Requesting for block headers...\n", .{});
     try Network.Node.sendMessage(connection, Network.Protocol.Message{
         .getheaders = .{
@@ -363,8 +363,7 @@ pub fn getAppFileAbsolutePath(gpa: std.mem.Allocator, filename: []const u8) ![]u
 }
 
 pub const OpenAppFileOpts = struct {
-    /// Clears current file making it empty
-    override_existing: bool = false,
+    start_fresh: bool = false,
 };
 pub const OpenAppFileError = std.fs.File.OpenError || std.fs.GetAppDataDirError;
 /// Caller is reponsible for calling `.close()` on file returned
@@ -373,7 +372,7 @@ pub fn openAppFile(gpa: std.mem.Allocator, filename: []const u8, comptime opt: O
     defer gpa.free(filepath);
 
     log.info("accessing {s}...", .{filepath});
-    if (opt.override_existing) {
+    if (opt.start_fresh) {
         return try std.fs.createFileAbsolute(filepath, .{});
     } else {
         return std.fs.openFileAbsolute(filepath, .{});

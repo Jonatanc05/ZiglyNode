@@ -68,7 +68,10 @@ pub fn AppInit(win: *dvui.Window) !void {
 
 // Run as app is shutting down before dvui.Window.deinit()
 pub fn AppDeinit() void {
-    if (state_ptr) |s| s.deinit(gpa);
+    if (state_ptr) |s| {
+        s.writeBlockheadersToDisk(gpa);
+        s.deinit(gpa);
+    }
 }
 
 // Run each frame to do normal UI
@@ -101,6 +104,14 @@ pub fn frame() !dvui.App.Result {
                 }
             }
         }
+
+        const label = if (dvui.Examples.show_demo_window) "Hide Demo Window" else "Show Demo Window";
+        if (dvui.menuItemLabel(@src(), label, .{}, .{ .tag = "show-demo-btn" })) |_| {
+            dvui.Examples.show_demo_window = !dvui.Examples.show_demo_window;
+        }
+        if (dvui.menuItemLabel(@src(), "Debug window", .{}, .{})) |_| {
+            dvui.toggleDebugWindow();
+        }
     }
 
     var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both, .style = .window });
@@ -120,37 +131,6 @@ pub fn frame() !dvui.App.Result {
 
     try peerListWidget(gpa);
 
-    _ = dvui.separator(@src(), .{ .expand = .horizontal });
-
-    const label = if (dvui.Examples.show_demo_window) "Hide Demo Window" else "Show Demo Window";
-    if (dvui.button(@src(), label, .{}, .{ .tag = "show-demo-btn" })) {
-        dvui.Examples.show_demo_window = !dvui.Examples.show_demo_window;
-    }
-
-    if (dvui.button(@src(), "Debug Window", .{}, .{})) {
-        dvui.toggleDebugWindow();
-    }
-
-    {
-        var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{});
-        defer hbox.deinit();
-        dvui.label(@src(), "Pinch Zoom or Scale", .{}, .{});
-        if (dvui.buttonIcon(@src(), "plus", dvui.entypo.plus, .{}, .{}, .{})) {
-            dvui.currentWindow().content_scale *= 1.1;
-        }
-
-        if (dvui.buttonIcon(@src(), "minus", dvui.entypo.minus, .{}, .{}, .{})) {
-            dvui.currentWindow().content_scale /= 1.1;
-        }
-
-        if (dvui.currentWindow().content_scale != orig_content_scale) {
-            if (dvui.button(@src(), "Reset Scale", .{}, .{})) {
-                dvui.currentWindow().content_scale = orig_content_scale;
-            }
-        }
-    }
-
-    // look at demo() for examples of dvui widgets, shows in a floating window
     dvui.Examples.demo();
 
     return .ok;
@@ -255,7 +235,7 @@ pub fn peerListWidget(alloc: std.mem.Allocator) !void {
                 };
                 if (dvui.button(@src(), txt, .{}, .{}) and req_count != null) {
                     while (req_count.? > 0) : (req_count.? -= 1) {
-                        const result = zigly.requestBlocks(state_ptr.?, &state_ptr.?.connections[i].data, alloc);
+                        const result = zigly.requestBlockheaders(state_ptr.?, &state_ptr.?.connections[i].data, alloc);
                         if (result) |res| {
                             if (res == 0) {
                                 dvui.toast(@src(), .{ .message = "No new blocks" });

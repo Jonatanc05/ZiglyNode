@@ -6,19 +6,17 @@
 - I like [Bitcoin](https://btcmaxis.com/)
 - I like [Zig](https://ziglang.org/)
 
+Okay, "handmade" and "minimal dependencies" is a small stretch regarding the GUI version. But the CLI version (and all core code) is pretty much handmade.
+
 ## Build Requirements
 
 - Currently building with Zig 0.15.X
     - See https://ziglang.org/download/#release-0.15.2
     - You can use [version-fox](https://vfox.dev/guides/quick-start.html) or [zvm](https://www.zvm.app/) to manage Zig versions
 
-- Windows 11 and Ubuntu WSL are usually tested.
+- **Command to build and run**: `zig build cli` or `zig build gui` (for more info type `zig build help`)
 
-- Optionally add a file called `.privkey` to the your working directory containing a private key to test. Do not use a real key.
-    - `echo 0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a2a3a4a0a1a > .privkey`
-    - Will be created automatically (with this sample value) if absent
-
-This file should contain hex characters representing the private key to use when signing transactions. **DO NOT USE REAL WALLET INFORMATION WITH THIS SOFTWARE**.
+- Windows 11 and Linux are usually tested.
 
 ## Features
 
@@ -33,26 +31,30 @@ All features here are implemented (at least almost) from scratch. Using only the
     - Get block headers, check they are valid and write/load them on disk
     - Get neighbour peers to discover the network
 - Multi-threaded handshakes for speed
+- GUI using [a third-party libray](https://david-vanderson.github.io/)
 
-## Screenshots
+## CLI Example
 
 Example of current output:
 
 ```
-> zig build run
+> zig build cli
 info: loading block headers from path/to/ZiglyNode/blockheaders.dat
 
 Your address is mwWdV8mUAE2rQugQLtRJdrqxi3rf4R3xbq
 
 ################################################
-
-Hello dear hodler, tell me what can I do for you
-1. View blockchain state
-2. Connect to a new peer
-3. List peers (interact)
-4. Sign a transaction
-5. Exit
-
+#                                              #
+# Hello dear hodler, tell me what to do        #
+#   1. View blockchain state                   #
+#   2. Connect to a new peer                   #
+#   3. List peers (1)                          #
+#   4. Sign a transaction                      #
+#   5. Exit                                    #
+#                                              #
+# NOTE: Type "i <N>" to interact with peer     #
+# number N                                     #
+################################################
 1
 
 === Blockchain State ===
@@ -75,6 +77,7 @@ What do you want to do?
 1. disconnect from peer
 2. ask for block headers
 3. ask for new peers and connect
+4. ask for entire blocks
 2
 Requesting for block headers...
 Unexpected and unsupported command received
@@ -94,6 +97,7 @@ What do you want to do?
 1. disconnect from peer
 2. ask for block headers
 3. ask for new peers and connect
+4. ask for entire blocks
 3
 info: Requesting for new peers and connecting...
 Unexpected and unsupported command received
@@ -116,14 +120,17 @@ info: Connection to 174.161.123.250:8333 failed: Timeout
 info: Connected to 4 new peers
 
 ################################################
-
-Hello dear hodler, tell me what can I do for you
-1. View blockchain state
-2. Connect to a new peer
-3. List peers (interact)
-4. Sign a transaction
-5. Exit
-
+#                                              #
+# Hello dear hodler, tell me what to do        #
+#   1. View blockchain state                   #
+#   2. Connect to a new peer                   #
+#   3. List peers (1)                          #
+#   4. Sign a transaction                      #
+#   5. Exit                                    #
+#                                              #
+# NOTE: Type "i <N>" to interact with peer     #
+# number N                                     #
+################################################
 3
 
 ======== Peer list ========

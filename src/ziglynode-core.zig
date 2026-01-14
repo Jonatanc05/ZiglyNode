@@ -1,6 +1,7 @@
 const std = @import("std");
 const Thread = std.Thread;
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 
 const Bitcoin = @import("bitcoin.zig");
 const Network = @import("network.zig");
@@ -9,7 +10,7 @@ const Address = std.net.Address;
 const log = std.log.scoped(.zigly_core);
 
 pub const app_name = "ZiglyNode";
-pub const max_connections = 8;
+pub const max_connections = build_options.max_connections;
 pub const blockheaders_filename_mainnet = "blockheaders.dat";
 pub const blockheaders_filename_signet = "blockheaders_signet.dat";
 pub const max_concurrent_tasks = max_connections;
@@ -272,7 +273,7 @@ pub fn requestNewPeers(state: *State, connection: *const Network.Node.Connection
     Thread.sleep(500_000_000);
     for (0..num_tasks) |_| semaphore.wait();
 
-    log.info("Connected to {d} new peers\n", .{new_connections_count});
+    log.info("Connected to {d} new peers", .{new_connections_count});
 }
 
 pub fn advertiseTransaction(state_ptr: *const State, allocator: std.mem.Allocator, txid: u256) void {

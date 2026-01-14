@@ -3,9 +3,13 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const max_connections = b.option(u32, "max_connections", "Maximum number of connections (default: 20, ignored for CLI)") orelse 20;
 
     // Native SDL3 executable
     {
+        const options = b.addOptions();
+        options.addOption(u32, "max_connections", max_connections);
+
         const exe = b.addExecutable(.{
             .name = "ZiglyNode-gui",
             .root_module = b.createModule(.{
@@ -15,6 +19,7 @@ pub fn build(b: *std.Build) void {
             }),
             .use_llvm = true,
         });
+        exe.root_module.addOptions("build_options", options);
         exe.addIncludePath(b.path("include"));
 
         const dvui_dep = b.dependency("dvui", .{ .target = target, .optimize = optimize, .backend = .sdl3 });
@@ -37,6 +42,9 @@ pub fn build(b: *std.Build) void {
 
     // CLI
     {
+        const options = b.addOptions();
+        options.addOption(u32, "max_connections", 9); // Enforced to 9 for CLI
+
         const exe = b.addExecutable(.{
             .name = "ZiglyNode-cli",
             .root_module = b.createModule(.{
@@ -46,6 +54,7 @@ pub fn build(b: *std.Build) void {
             }),
             .use_llvm = true,
         });
+        exe.root_module.addOptions("build_options", options);
         exe.addIncludePath(b.path("include"));
 
         const install_exe = b.addInstallArtifact(exe, .{});
@@ -65,6 +74,9 @@ pub fn build(b: *std.Build) void {
 
     // WASM build
     {
+        const options = b.addOptions();
+        options.addOption(u32, "max_connections", max_connections);
+
         const wasm_target = b.resolveTargetQuery(.{
             .cpu_arch = .wasm32,
             .os_tag = .freestanding,
@@ -87,6 +99,7 @@ pub fn build(b: *std.Build) void {
             }),
         });
         wasm_exe.entry = .disabled;
+        wasm_exe.root_module.addOptions("build_options", options);
         wasm_exe.addIncludePath(b.path("include"));
         wasm_exe.root_module.addImport("dvui", dvui_web_dep.module("dvui_web"));
 
